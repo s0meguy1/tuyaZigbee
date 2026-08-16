@@ -41,6 +41,14 @@ void hwLight_levelUpdate(u8 level);
 void hwLight_colorUpdate_colorTemperature(u16 colorTemperatureMireds, u8 level);
 void hwLight_colorUpdate_HSV2RGB(u8 hue, u8 saturation, u8 level);
 
+/* integer HSV -> RGB, 0..255 per channel */
+void hsvToRGB(u8 hue, u8 saturation, u8 level, u8 *R, u8 *G, u8 *B);
+/* the single 5-channel output point: gamma + white-balance trim + active
+ * level are applied here, for both ZCL control and the effect engine */
+void moes_outSet(u8 r, u8 g, u8 b, u8 cw, u8 ww);
+void temperatureToCW(u16 temperatureMireds, u8 level, u8 *C, u8 *W);
+void pwmSetDuty(u8 ch, u16 dutycycle);
+
 void light_adjust(void);
 void light_fresh(void);
 void light_applyUpdate(u8 *curLevel, u16 *curLevel256, s32 *stepLevel256, u16 *remainingTime, u8 minLevel, u8 maxLevel, bool wrap);

@@ -216,9 +216,20 @@ static void tuyaLight_moveProcess(u8 cmdId, move_t *cmd)
 		newLevel = ZCL_LEVEL_ATTR_MIN_LEVEL;
 		deltaLevel = pLevel->curLevel - ZCL_LEVEL_ATTR_MIN_LEVEL;
 	}
-	pLevel->remainingTime = ((u32)deltaLevel * 1000) / rate;
-	if(pLevel->remainingTime == 0){
+
+	/* cmd->rate is network-reachable and unvalidated. A rate of 0 makes the
+	 * divisor zero; on this part the integer division routine polls the
+	 * hardware divider's status bit and never checks for a zero divisor, so a
+	 * zero rate either hangs the CPU in the busy-wait or (if the divider does
+	 * complete) returns a garbage 0xFFFF that leaves a perpetual 100 ms level
+	 * timer doing nothing. Treat a zero rate as a single-tick move instead. */
+	if(rate == 0){
 		pLevel->remainingTime = 1;
+	}else{
+		pLevel->remainingTime = ((u32)deltaLevel * 1000) / rate;
+		if(pLevel->remainingTime == 0){
+			pLevel->remainingTime = 1;
+		}
 	}
 
 	levelInfo.stepLevel256 = ((s32)(newLevel - pLevel->curLevel)) << 8;

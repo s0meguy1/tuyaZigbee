@@ -39,6 +39,9 @@
 #include "tuyaLightCtrl.h"
 #include "app_ui.h"
 #include "factory_reset.h"
+#include "moes_flashcfg.h"
+#include "light_effects.h"
+#include "moes_rescue.h"
 #if ZBHCI_EN
 #include "zbhci.h"
 #endif
@@ -116,6 +119,10 @@ bdb_commissionSetting_t g_bdbCommissionSetting = {
  */
 ev_timer_event_t *tuyaLightAttrsStoreTimerEvt = NULL;
 
+#if MOES_TS0505B
+static void tuyaLight_reportingTabSanitize(void);
+#endif
+
 
 /**********************************************************************
  * FUNCTIONS
@@ -185,9 +192,71 @@ void user_app_init(void)
     /* Initialize WWAH server */
     wwah_init(WWAH_TYPE_SERVER, (af_simple_descriptor_t *)&tuyaLight_simpleDesc);
 #endif
+
+#if MOES_TS0505B
+	/* Last: every cluster this image has is now registered, so
+	 * zcl_findAttribute() can give a truthful answer. */
+	tuyaLight_reportingTabSanitize();
+#endif
 }
 
 
+
+#if MOES_TS0505B
+/*********************************************************************
+ * @fn      tuyaLight_reportingTabSanitize
+ *
+ * @brief   Drop restored reporting entries whose attribute this image does
+ *          not have.
+ *
+ * zcl_reportingTabInit() restores the whole table from NV without checking
+ * anything, but the only *live* validation is in zcl_configureReporting(),
+ * on the inbound command path. Nothing revalidates after a restore. Three
+ * places then dereference the result of zcl_findAttribute() on a restored
+ * entry - zcl_reporting.c lines 400, 437 and 489 - and each of them calls
+ * ZB_EXCEPTION_POST(SYS_EXCEPTTION_ZB_ZCL_ENTRY) if the attribute is gone.
+ * That reaches our sys_exceptHandlerRegister() callback, which calls
+ * SYSTEM_RESET(). reportNoMinLimit() is driven from app_task() on every idle
+ * poll, so the reset is immediate and repeats on every boot: a permanent,
+ * unrecoverable loop caused by nothing more than a firmware update that
+ * removed an attribute.
+ *
+ * That is not reachable today - our own previous images have the same
+ * attribute set, and the stock Tuya NV is invisible to us (its modules use
+ * ids 9/10/11 and nv_sector_read() rejects them on the idName test). It
+ * becomes reachable the moment any future image drops a reportable
+ * attribute, and v1.2 has just added three of them on cluster 0xEF00. Twenty
+ * lines here retire the whole class.
+ *
+ * MUST run after every zcl_register()/ota_init()/gp_init(), because
+ * zcl_findAttribute() can only answer for clusters that exist.
+ */
+static void tuyaLight_reportingTabSanitize(void)
+{
+	u8 dropped = 0;
+
+	for(u8 i = 0; i < ZCL_REPORTING_TABLE_NUM; i++){
+		reportCfgInfo_t *pEntry = &reportingTab.reportCfgInfo[i];
+
+		if(!pEntry->used){
+			continue;
+		}
+
+		if(!zcl_findAttribute(pEntry->endPoint, pEntry->clusterID, pEntry->attrID)){
+			zcl_reportCfgInfoEntryClear(pEntry);
+			dropped++;
+		}
+	}
+
+	if(dropped){
+		reportingTab.reportNum = (reportingTab.reportNum > dropped)
+								 ? (reportingTab.reportNum - dropped) : 0;
+		/* Persist immediately: if we crash before the next save the same
+		 * stale entries come back on the next boot. */
+		zcl_reportingTab_save();
+	}
+}
+#endif
 
 s32 tuyaLightAttrsStoreTimerCb(void *arg)
 {
@@ -236,9 +305,27 @@ void report_handler(void)
 
 void app_task(void)
 {
+#if HAVE_NET_BUTTON
+	/* MOES: belt-and-braces with the guard inside app_key_handler().
+	 * This board has no button; running the scanner on it synthesises a
+	 * permanently-held VK_SW1 and factory-resets the light every 5 s. */
 	app_key_handler();
+#endif
 	localPermitJoinState();
 	if(BDB_STATE_GET() == BDB_STATE_IDLE){
+#if MOES_TS0505B
+		/* Rescue mode services the radio and the OTA cluster and nothing
+		 * else. Both of the calls skipped here write NV. */
+		if(!moes_rescueActive()){
+			factoryRst_handler();
+		}
+
+		report_handler();
+
+		if(!moes_rescueActive()){
+			tuyaLightAttrsChk();
+		}
+#else
 		//factroyRst_handler();
 
 		report_handler();
@@ -246,20 +333,41 @@ void app_task(void)
 #if 1/* NOTE: If set to '1', the latest status of lighting will be stored. */
 		tuyaLightAttrsChk();
 #endif
+#endif
 	}
 }
 
 static void tuyaLightSysException(void)
 {
+#if MOES_TS0505B
+	/* MOES: reset immediately, write nothing.
+	 *
+	 * Upstream saved on/off, level and colour to NV here. Three reasons not
+	 * to on this device:
+	 *
+	 * 1. sys_exceptionPost() is called synchronously from wherever the fault
+	 *    was detected - including from inside the NV layer itself
+	 *    (drv_nv.c nv_itemLengthCheckAdd) and from the ev_buffer free path.
+	 *    Re-entering nv_flashWriteNew() from there can leave a sector
+	 *    half-written, which is a *worse* failure than the one we are
+	 *    reacting to.
+	 * 2. If the fault repeats every boot, so do the flash writes. A reset
+	 *    loop at ~10 s/cycle would then be grinding the APP/ZCL NV sectors
+	 *    at ~360 writes an hour.
+	 * 3. It buys nothing: tuyaLightAttrsChk() already persists this state
+	 *    one second after any change during normal operation.
+	 *
+	 * Getting back to a state where an OTA can land is the only thing that
+	 * matters here. Nothing needs to be recorded: the reset itself is what
+	 * moes_rescue.c counts, on the next boot, from a context where writing
+	 * NV is safe. */
+	SYSTEM_RESET();
+#else
 	zcl_onOffAttr_save();
 	zcl_levelAttr_save();
 	zcl_colorCtrlAttr_save();
 
-#if 1
 	SYSTEM_RESET();
-#else
-	led_on(LED_POWER);
-	while(1);
 #endif
 }
 
@@ -278,21 +386,60 @@ void user_init(bool isRetention)
 
 	/* Initialize LEDs*/
 	led_init();
-	hwLight_init();
+	hwLight_init();   /* also loads the Tuya factory JSON + MAC fallback data */
 
-	//factroyRst_init();
+#if MOES_TS0505B
+	lightFx_init();   /* plain memset, no stack/NV dependency */
+#endif
 
 	/* Initialize Stack */
 	stack_init();
 
+#if MOES_TS0505B
+	/* MUST come after stack_init(): nv_init() lives inside the prebuilt
+	 * stack library and is called from zb_init(), so any NV access before
+	 * this point runs against an uninitialized NV subsystem. factoryRst_init()
+	 * does three NV operations and schedules a TL_ZB_TIMER; calling it early
+	 * crashed on every boot, and the registered exception handler turned that
+	 * into SYSTEM_RESET() - i.e. a permanent boot loop on a device that can
+	 * only be fixed over the air. Cost one ceiling light to learn.
+	 *
+	 * moes_rescueBootCheck() is the first NV user after stack_init() for the
+	 * same reason, and because everything below needs to know the answer.
+	 * It reads and writes exactly one byte. See moes_rescue.h. */
+	moes_rescueBootCheck();
+#endif
+
 	/* Initialize user application */
 	user_app_init();
+
+#if MOES_TS0505B
+	if(!moes_rescueActive()){
+		factoryRst_init();
+	}
+#endif
 
 	/* Register except handler for test */
 	sys_exceptHandlerRegister(tuyaLightSysException);
 
+#if MOES_TS0505B
+	if(moes_rescueActive()){
+		/* Deliberately NOT light_adjust(). That path runs
+		 * tuyaLight_colorInit() -> light_applyUpdate() -> light_fresh() ->
+		 * the whole colour/level/effect machinery, which is precisely the
+		 * code rescue mode exists not to depend on. Drive the output stage
+		 * directly instead: dim cool white, fixed, forever. It is also a
+		 * usable signal for a human on a ladder - a light that comes up dim
+		 * white and ignores every command is in rescue mode, not dead. */
+		moes_outSet(0, 0, 0, 0x40, 0);
+	}else{
+		/* Adjust light state to default attributes*/
+		light_adjust();
+	}
+#else
 	/* Adjust light state to default attributes*/
 	light_adjust();
+#endif
 
 	/* User's Task */
 #if ZBHCI_EN

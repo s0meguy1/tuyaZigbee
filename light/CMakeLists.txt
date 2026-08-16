@@ -4,6 +4,12 @@ cmake_minimum_required(VERSION 3.22)
 
 SET(TARGET light)
 
+IF(DEVICE_VARIANT)
+    SET(TARGET ${TARGET}_${DEVICE_VARIANT})
+ELSE()
+    SET(DEVICE_VARIANT TS0501B)
+ENDIF()
+
 IF(NOT MIMIC_HEIMAN)
     SET(MIMIC_HEIMAN 0)
 ELSE()
@@ -15,10 +21,21 @@ ADD_DEFINITIONS(
     -DMCU_CORE_${TELINK_PLATFORM}=1
     -DMCU_STARTUP_${TELINK_PLATFORM}=1
     -D__PROJECT_TL_DIMMABLE_LIGHT__=1
-    -DBUILD_TS0501B=1
+    -DBUILD_${DEVICE_VARIANT}=1
     -DROUTER=1
     -DMIMIC_HEIMAN=${MIMIC_HEIMAN}
 )
+
+# Moes TS0505B: relocate NV to Tuya's own base. Two reasons, both fatal
+# otherwise (see the patch note in tl_zigbee_sdk/proj/drivers/drv_nv.h):
+#   * the SDK default 0xE6000 makes NV overrun the factory blocks at
+#     0xF8000 (board config) and 0xFB000 (identity/IEEE)
+#   * it also puts the OTA staging bank at 0x77000, while the stock Tuya
+#     bootloader reads 0x70000 - the "cannot update again" bug
+# 0xD8000 yields NV 0xD8000-0xEE000 and OTA bank exactly 0x70000.
+IF(DEVICE_VARIANT MATCHES "^TS0505B")
+    ADD_DEFINITIONS(-DMOES_NV_BASE_ADDRESS=0xD8000)
+ENDIF()
 
 ################################
 # Zigbee Library
@@ -189,7 +206,7 @@ LINK_DIRECTORIES(
 
 SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -T${SDK_PREFIX}/platform/boot/${TELINK_PLATFORM}/boot_${TELINK_PLATFORM}.link")
 
-file( GLOB SOURCES1 *.c *.cpp *.h *.S common/*.c common/*.h )
+file( GLOB SOURCES1 *.c *.cpp *.h *.S ../common/*.c ../common/*.h )
 
 SET (SOURCES  ${SOURCES1} ${ZIGBEE_SRC})
 
@@ -209,3 +226,10 @@ TARGET_LINK_LIBRARIES(${TARGET}
 
 ADD_BIN_TARGET(${TARGET} ${PROJECT_SOURCE_DIR}/tools)
 ADD_OTA_TARGET(${TARGET} ${PROJECT_SOURCE_DIR}/tools)
+
+# TS0505B: also build the from-stock conversion OTA - served to stock Tuya
+# firmware it must present the stock query pair (0x1141 / 0xD3A3) with a
+# version no stock build can exceed, so every deployed light accepts it.
+IF(DEVICE_VARIANT STREQUAL "TS0505B")
+    ADD_TUYA_OTA_TARGET(${TARGET} ${PROJECT_SOURCE_DIR}/tools 0x1141 0xD3A3 0xFFFFFFFF)
+ENDIF()

@@ -35,11 +35,27 @@
 #include "ota.h"
 #include "tuyaLight.h"
 #include "tuyaLightCtrl.h"
+#include "moes_rescue.h"
+#include "moes_liveness.h"
 
 /**********************************************************************
  * LOCAL CONSTANTS
  */
 #define DEBUG_HEART		0
+
+#if MOES_TS0505B
+/* A light in rescue mode has told us it cannot run its own firmware, so it
+ * should be asking for a replacement far more often than the normal 6 hours. */
+#define TUYALIGHT_OTA_QUERY_INTERVAL(dflt)	\
+			(moes_rescueActive() ? MOES_RESCUE_OTA_QUERY_SECONDS : (dflt))
+
+/* Delay for the one-shot OTA kick a rescue-latched light gets on join (see
+ * zbdemo_bdbCommissioningCb). Kept non-zero so the just-completed join can
+ * settle before the query frame goes out. */
+#define TUYALIGHT_OTA_JOIN_KICK_DELAY_MS	1000
+#else
+#define TUYALIGHT_OTA_QUERY_INTERVAL(dflt)	(dflt)
+#endif
 
 /**********************************************************************
  * TYPEDEFS
@@ -64,12 +80,28 @@ ota_callBack_t tuyaLight_otaCb =
 {
 	tuyaLight_otaProcessMsgHandler,
 };
+
+#if MOES_TS0505B
+/* The SDK's periodic OTA-query timer is a single ev_timer_event_t defined in
+ * ota.c (otaTimer), not a TL_ZB_TIMER pointer. It is non-static but not
+ * declared in ota.h; the rescue-mode join kick below reaches it through this
+ * extern. */
+extern ev_timer_event_t otaTimer;
+#endif
 #endif
 
 /**********************************************************************
  * LOCAL VARIABLES
  */
 u32 heartInterval = 0;
+
+#if MOES_TS0505B
+/* The stock SDK skips the ZDO device_announce on the very first,
+ * factory-new join (empty NV). Set on a factory-new boot and consumed on the
+ * first successful commissioning so a conversion announces exactly once and
+ * rejoins are never double-announced. */
+static bool s_firstJoin = FALSE;
+#endif
 
 #if DEBUG_HEART
 ev_timer_event_t *heartTimerEvt = NULL;
@@ -126,10 +158,24 @@ void zbdemo_bdbInitCb(u8 status, u8 joinedNetwork){
 		if(joinedNetwork){
 			heartInterval = 1000;
 
+#if MOES_TS0505B
+			/* Already on a network at boot: start the "stayed joined long
+			 * enough to be healthy" clock now. */
+			moes_rescueStableTimerStart();
+
+			/* This boot holds credentials and expects to rejoin: arm the
+			 * rejoin-scan liveness monitor (moes_liveness.h). */
+			moes_livenessBootedOnNetwork();
+#endif
+
 #ifdef ZCL_OTA
-			ota_queryStart(MY_OTA_PERIODIC_QUERY_INTERVAL);
+			ota_queryStart(TUYALIGHT_OTA_QUERY_INTERVAL(MY_OTA_PERIODIC_QUERY_INTERVAL));
 #endif
 		}else{
+#if MOES_TS0505B
+			/* Empty NV at boot: this boot will be a factory-new first join. */
+			s_firstJoin = TRUE;
+#endif
 			heartInterval = 500;
 
 #if	(!ZBHCI_EN)
@@ -166,14 +212,59 @@ void zbdemo_bdbInitCb(u8 status, u8 joinedNetwork){
 void zbdemo_bdbCommissioningCb(u8 status, void *arg){
 //	printf("bdbCommCb: sta = %x\n", status);
 
+#if MOES_TS0505B
+	/* Any commissioning callback at all is proof the stack's state machine
+	 * is alive; the liveness monitor only fires on silence while unjoined. */
+	moes_livenessStackActivity();
+#endif
+
 	switch(status){
 		case BDB_COMMISSION_STA_SUCCESS:
 			heartInterval = 1000;
 
+#if MOES_TS0505B
+			/* On the network: arm the liveness monitor. */
+			moes_livenessJoined();
+
+			if(s_firstJoin){
+				/* The stack deliberately skips the announce on a factory-new
+				 * first join; send it ourselves so the announce gate can see
+				 * the conversion. Clear first so rejoins never double-announce. */
+				s_firstJoin = FALSE;
+				zb_zdoSendDevAnnance();
+			}
+
+			/* Joined. Start (or leave running) the health clock. */
+			moes_rescueStableTimerStart();
+
+			/* No identify blink in rescue mode - light_blink_start() drives
+			 * hwLight_onOffUpdate() on a timer and rescue mode holds a fixed
+			 * output on purpose. */
+			if(!moes_rescueActive())
+#endif
 			light_blink_start(2, 200, 200);
 
 #ifdef ZCL_OTA
-	    	ota_queryStart(OTA_PERIODIC_QUERY_INTERVAL);
+	    	ota_queryStart(TUYALIGHT_OTA_QUERY_INTERVAL(OTA_PERIODIC_QUERY_INTERVAL));
+
+#if MOES_TS0505B
+	    	if(moes_rescueActive() &&
+	    	   zcl_attr_imageUpgradeStatus == IMAGE_UPGRADE_STATUS_NORMAL){
+	    		/* A rescue-latched light has already told us its own firmware
+	    		 * cannot run. If it rejoins and then wedges again ~90 s later
+	    		 * (boothang_stack.md), a query that waits out the first 10 min
+	    		 * interval never happens - so kick the already-scheduled
+	    		 * periodic query now. ev_on_timer re-arms otaTimer to fire in
+	    		 * TUYALIGHT_OTA_JOIN_KICK_DELAY_MS; ota_periodicQueryServerCb's
+	    		 * return value (seconds * 1000) then restores the normal rescue
+	    		 * interval, so this is a one-shot kick, not a poll-rate change.
+	    		 *
+	    		 * Guarded on IMAGE_UPGRADE_STATUS_NORMAL so a mid-download
+	    		 * rejoin can never re-arm otaTimer while it is being used as an
+	    		 * image-block/countdown wait timer. */
+	    		ev_on_timer(&otaTimer, TUYALIGHT_OTA_JOIN_KICK_DELAY_MS);
+	    	}
+#endif
 #endif
 
 #if FIND_AND_BIND_SUPPORT
@@ -242,6 +333,22 @@ void tuyaLight_otaProcessMsgHandler(u8 evt, u8 status)
 		}
 	}else if(evt == OTA_EVT_COMPLETE){
 		if(status == ZCL_STA_SUCCESS){
+#if MOES_TS0505B
+			/* mark the reboot so the 3-power-cycle reset counter stays quiet */
+			{
+				extern void moes_resetSkipNextBoot(void);
+				moes_resetSkipNextBoot();
+			}
+#endif
+#if defined(MOES_NOBOOT_MIGRATION)
+			/* future: install the staged image into the 0x40000 bank and
+			 * retire the bootloader. Not used in v1 - the stock Tuya
+			 * bootloader picks the staged image up from 0x70000 itself. */
+			{
+				extern void moes_otaBankInstall(void);
+				moes_otaBankInstall();
+			}
+#endif
 			ota_mcuReboot();
 		}else{
 			ota_queryStart(OTA_PERIODIC_QUERY_INTERVAL);
@@ -251,6 +358,16 @@ void tuyaLight_otaProcessMsgHandler(u8 evt, u8 status)
 #endif
 
 s32 tuyaLight_softReset(void *arg){
+#if MOES_TS0505B
+	/* MOES_EDITING_GUIDE S4.5: every *deliberate* reboot must mark itself so
+	 * the 3-power-cycle gesture never mistakes it for a user power cycle.
+	 * This one (a network leave) was missing the mark, so a leave burned one
+	 * count and left it in NV. */
+	{
+		extern void moes_resetSkipNextBoot(void);
+		moes_resetSkipNextBoot();
+	}
+#endif
 	SYSTEM_RESET();
 
 	return -1;

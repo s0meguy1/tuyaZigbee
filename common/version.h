@@ -11,8 +11,8 @@
 #include "comm_cfg.h"
 
 
-#define APP_RELEASE                         0x10 //app release 1.0
-#define APP_BUILD                           0x03 //app build 03
+#define APP_RELEASE                         0x11 //app release 1.1 (Moes TS0505B custom)
+#define APP_BUILD                           0x09 //app build 09 (OTA-install descriptor at 0xF7000 + wedge-proof liveness redesign)
 #define STACK_RELEASE                       0x30 //stack release 3.0
 #define STACK_BUILD                         0x03 //stack build 03 - 3.6.8.6
 

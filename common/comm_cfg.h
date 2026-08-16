@@ -49,8 +49,24 @@
  * If BOOT_LOADER_MODE is 1, it means that the SDK uses Boot Loader Mode.
  *
  * Normal mode is used by default.
+ *
+ * MOES TS0505B (BUILD_TS0505B) uses Normal/no-bootloader mode: the OTA
+ * conversion image lands at 0x8000 under the stock Tuya bootloader, and
+ * moes_otaScheme.c immediately migrates it to the 0x0/0x40000 dual-bank
+ * scheme so every later OTA is an atomic flag flip with no brick window.
  */
+/* Moes TS0505B v1 keeps the stock Tuya bootloader and runs at 0x8000,
+ * exactly where the stock app ran. Combined with MOES_NV_BASE_ADDRESS
+ * (0xD8000) the OTA staging bank lands on 0x70000 - the address that
+ * bootloader actually reads - so updates keep working indefinitely.
+ * The no-bootloader dual-bank scheme (moes_otaScheme.c) is retained for
+ * a future version; it additionally requires main() to be ram-code. */
 #define BOOT_LOADER_MODE                    1
+
+/* shared marker for the Moes TS0505B device (either build variant) */
+#if defined(BUILD_TS0505B) || defined(BUILD_TS0505B_BOOT)
+#define MOES_TS0505B                        1
+#endif
 
 
 
@@ -128,6 +144,7 @@
 #define BOARD_8258_TUYA_SWITCH_ZBWS04A      14
 
 #define BOARD_8258_TUYA_LIGHT_STRIP_TS0501B 30
+#define BOARD_8258_TUYA_DOWNLIGHT_TS0505B  31
 
 #define BOARD_8258_TUYA_DOOR_SENSOR_ZG102ZL 60
 
@@ -153,6 +170,8 @@
         #define BOARD                       BOARD_8258_TUYA_SWITCH_ZBWS04A
     #elif defined(BUILD_TS0501B)
         #define BOARD                       BOARD_8258_TUYA_LIGHT_STRIP_TS0501B
+    #elif defined(BUILD_TS0505B) || defined(BUILD_TS0505B_BOOT)
+        #define BOARD                       BOARD_8258_TUYA_DOWNLIGHT_TS0505B
     #elif defined(BUILD_ZG102ZL)
         #define BOARD                       BOARD_8258_TUYA_DOOR_SENSOR_ZG102ZL
     #else
@@ -197,6 +216,8 @@
     //#warning "tuya board"
 #elif (BOARD == BOARD_8258_TUYA_LIGHT_STRIP_TS0501B)
     #include "../device_config/light_ts0501b.h"
+#elif (BOARD == BOARD_8258_TUYA_DOWNLIGHT_TS0505B)
+    #include "../device_config/light_ts0505b.h"
 #elif (BOARD == BOARD_8258_TUYA_DOOR_SENSOR_ZG102ZL)
     #include "../device_config/iaszone_zg102zl.h"
 
@@ -205,6 +226,17 @@
 #endif
 
 //#warning "board BOARD"
+
+/* Does this board actually have a wired push-button?
+ *
+ * MOES: this was a defined-but-never-read macro. Four board headers set it,
+ * nothing tested it, so the key scanner ran on every board including ones
+ * with no buttons at all. On the TS0505B that is fatal - see the note in
+ * device_config/light_ts0505b.h and MOES_EDITING_GUIDE.md S0.1. Default to 1
+ * so every board that does not say otherwise keeps its current behaviour. */
+#ifndef HAVE_NET_BUTTON
+    #define HAVE_NET_BUTTON                 1
+#endif
 
 // #pragma message "The value of CHIP_TYPE: " XSTR(CHIP_TYPE)
 // #pragma message "The value of BOARD: " XSTR(BOARD)

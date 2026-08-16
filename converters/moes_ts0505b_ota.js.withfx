@@ -1,0 +1,107 @@
+/**
+ * zigbee2mqtt external converter - Moes ZB-TDD6-RCW-4 (TS0505B / _TZ3210_b8jdosxo)
+ *
+ * Same minimal-diff derivation as moes_ts0505b_ota.js (clone z2m's own
+ * built-in definition, restrict the fingerprint to this fleet, add `ota`),
+ * PLUS the light-show controls exposed by the custom firmware.
+ *
+ * Named light_show* rather than effect* on purpose: the built-in
+ * definition already exposes a standard ZCL `effect` (blink/breathe/
+ * colorloop for identify), and reusing that name collides in both the
+ * exposes list and the toZigbee key lookup.
+ *
+ * The controls talk to the firmware's Tuya-style cluster 0xEF00:
+ *   dp 0x6E  effect  enum  0..11   (0 = stop, back to normal ZCL control)
+ *   dp 0x6F  speed   value 1..100
+ *   dp 0x70  phase   value 0..359  (per-light timeline offset)
+ *
+ * Wire format is whatever zigbee-herdsman's 'dataRequest' emits:
+ *   seq u16, then per datapoint: dp u8, datatype u8, len u16 BE, data.
+ * Note the cluster is NOT manufacturer-specific in herdsman, so no
+ * manufacturerCode option is passed - the firmware registers 0xEF00 with
+ * MANUFACTURER_CODE_NONE to match.
+ *
+ * On a light still running STOCK firmware these controls simply do
+ * nothing (the stock app ignores these datapoint ids), so one definition
+ * safely covers the fleet mid-migration.
+ */
+
+const {definitions} = require('zigbee-herdsman-converters/devices/tuya');
+const exposes = require('zigbee-herdsman-converters/lib/exposes');
+const ea = exposes.access;
+
+const builtin = definitions.find((d) => (d.whiteLabel || []).some((w) => w.model === 'ZB-TDD6-RCW-4'));
+if (!builtin) {
+    throw new Error('moes_ts0505b_ota: built-in TS0505B_1 definition not found - review before using');
+}
+
+const EFFECTS = ['stop', 'rainbow', 'pulse', 'candle', 'twinkle', 'fire',
+    'strobe', 'wave', 'lightning', 'chase', 'color_step', 'snow'];
+
+const DP_EFFECT = 0x6e;
+const DP_SPEED = 0x6f;
+const DP_PHASE = 0x70;
+
+// Tuya datatypes: 0x01 bool, 0x02 value(4B BE), 0x04 enum(1B)
+const TY_VALUE = 0x02;
+const TY_ENUM = 0x04;
+
+let seq = Math.floor(Math.random() * 0xffff);
+
+async function sendDp(entity, dp, datatype, data) {
+    seq = (seq + 1) & 0xffff;
+    await entity.command('manuSpecificTuya', 'dataRequest', {
+        seq,
+        dpValues: [{dp, datatype, data}],
+    });
+}
+
+const tzEffect = {
+    key: ['light_show', 'light_show_speed', 'light_show_phase'],
+    convertSet: async (entity, key, value, meta) => {
+        if (key === 'light_show') {
+            const idx = typeof value === 'string' ? EFFECTS.indexOf(value) : Number(value);
+            if (!(idx >= 0 && idx < EFFECTS.length)) {
+                throw new Error(`unknown light_show '${value}'; one of: ${EFFECTS.join(', ')}`);
+            }
+            await sendDp(entity, DP_EFFECT, TY_ENUM, [idx]);
+            return {state: {light_show: EFFECTS[idx]}};
+        }
+        if (key === 'light_show_speed') {
+            const v = Math.max(1, Math.min(100, Number(value)));
+            await sendDp(entity, DP_SPEED, TY_VALUE, [0, 0, 0, v]);
+            return {state: {light_show_speed: v}};
+        }
+        if (key === 'light_show_phase') {
+            const v = Math.max(0, Math.min(359, Number(value)));
+            await sendDp(entity, DP_PHASE, TY_VALUE, [0, 0, (v >> 8) & 0xff, v & 0xff]);
+            return {state: {light_show_phase: v}};
+        }
+    },
+};
+
+const definition = {...builtin};
+delete definition.zigbeeModel;
+delete definition.whiteLabel;
+
+Object.assign(definition, {
+    fingerprint: [{modelID: 'TS0505B', manufacturerName: '_TZ3210_b8jdosxo'}],
+    model: 'ZB-TDD6-RCW-4',
+    vendor: 'Moes',
+    description: 'RGB+CCT 6W Smart Downlight',
+    ota: true,
+    toZigbee: [...(builtin.toZigbee || []), tzEffect],
+    exposes: [
+        // keep everything the built-in definition exposed...
+        ...(typeof builtin.exposes === 'function' ? [] : (builtin.exposes || [])),
+        // ...and add the custom-firmware light show controls
+        exposes.enum('light_show', ea.SET, EFFECTS)
+            .withDescription('On-device light show (custom firmware only). Any normal on/off/brightness/colour command stops it.'),
+        exposes.numeric('light_show_speed', ea.SET).withValueMin(1).withValueMax(100)
+            .withDescription('Light show speed, 1-100 (default 50)'),
+        exposes.numeric('light_show_phase', ea.SET).withValueMin(0).withValueMax(359)
+            .withDescription('Light show phase offset in degrees. Give each light a different phase, then broadcast an effect to the group to get a chase/wave across the room.'),
+    ],
+});
+
+module.exports = definition;

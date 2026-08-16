@@ -56,3 +56,6 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# host test binary
+tools/rescue_hosttest/test_rescue

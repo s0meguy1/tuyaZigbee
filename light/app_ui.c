@@ -126,6 +126,22 @@ void keyScan_keyReleasedCB(u8 keyCode){
 
 volatile u8 T_keyPressedNum = 0;
 void app_key_handler(void){
+#if !HAVE_NET_BUTTON
+	/* MOES: boards with no button must never run the key scanner.
+	 *
+	 * kb_key_pressed() treats a scan pin reading LOW as "pressed"
+	 * (KB_LINE_HIGH_VALID == 0). A scan pin that is not explicitly given
+	 * PXX_INPUT_ENABLE 1 + PULL_WAKEUP_SRC_PXX has its input buffer disabled
+	 * and no pull resistor, so gpio_read_all() returns 0 for it - i.e. a
+	 * permanently held key from the second poll after boot. Five seconds
+	 * later buttonKeepPressed(VK_SW1) calls zb_factoryReset(), the device
+	 * reboots, and it does it again. That is an unrecoverable reset loop on
+	 * a device that can only be repaired over the air.
+	 *
+	 * The scanner stays compiled (drv_keyboard.c needs KB_SCAN_PINS to exist
+	 * for kb_event/kb_scan_key to link) but is never entered. */
+	return;
+#else
 	static u8 valid_keyCode = 0xff;
 
 	if(gLightCtx.state == APP_FACTORY_NEW_SET_CHECK){
@@ -146,6 +162,7 @@ void app_key_handler(void){
 			valid_keyCode = 0xff;
 		}
 	}
+#endif	/* HAVE_NET_BUTTON */
 }
 
 #endif  /* __PROJECT_TL_DIMMABLE_LIGHT__ */

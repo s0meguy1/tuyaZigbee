@@ -45,6 +45,19 @@
 /**********************************************************************
  * TYPEDEFS
  */
+/* MOES: every '#elif COLOR_CCT_SUPPORT' in this file used to make the two
+ * colour modes mutually exclusive. This board (RGBCW) sets both
+ * COLOR_RGB_SUPPORT and COLOR_CCT_SUPPORT, so the CCT half - the transition
+ * state, the three moveToColorTemperature/moveColorTemperature/
+ * stepColorTemperature handlers, and their entries in the command dispatch -
+ * simply was not compiled. The light advertised HA_DEV_EXTENDED_COLOR_LIGHT,
+ * published colorCapabilities with the colour-temperature bit and exposed
+ * colorTemperatureMireds, and then answered every colour-temperature command
+ * with UNSUP_CLUSTER_COMMAND. On 46 CCT downlights that is the whole point of
+ * the fixture.
+ *
+ * Splitting each '#elif' into '#endif' + '#if' compiles both halves; single-
+ * mode variants (TS0501B, the EVK boards) are bit-for-bit unaffected. */
 typedef struct{
 #if COLOR_RGB_SUPPORT
 	s32 stepHue256;
@@ -54,8 +67,8 @@ typedef struct{
 	s32 stepSaturation256;
 	u16 currentSaturation256;
 	u16 saturationRemainingTime;
-	
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	s32 stepColorTemp256;
 	u32	currentColorTemp256;
 	u16	colorTempRemainingTime;
@@ -76,8 +89,8 @@ static zcl_colorInfo_t colorInfo = {
 	.stepSaturation256			= 0,
 	.currentSaturation256		= 0,
 	.saturationRemainingTime	= 0,
-	
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	.stepColorTemp256			= 0,
 	.currentColorTemp256		= 0,
 	.colorTempRemainingTime		= 0,
@@ -111,7 +124,47 @@ void tuyaLight_colorInit(void)
 {
 	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
 
-#if COLOR_RGB_SUPPORT
+#if (COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT)
+	/* MOES: an extended colour light initialises *both* halves and leaves
+	 * colorCapabilities alone.
+	 *
+	 * The single-mode branch below overwrites colorCapabilities with
+	 * HUE_SATURATION only. On this board that discarded the colour-temperature
+	 * bit that tuyaLightEpCfg.c publishes, on every boot, before zigbee2mqtt
+	 * ever reads the attribute - so the light interviewed as hue/sat-capable
+	 * only and lost its colour-temperature control. It also forced colorMode
+	 * to hue/sat, so a downlight came back from a power cut in RGB mode
+	 * ignoring the colour temperature it had restored from NV.
+	 *
+	 * colorMode itself is not persisted (zcl_colorCtrlAttr_save() stores
+	 * hue/saturation and colorTemperatureMireds, not the mode), so at boot it
+	 * holds the attribute-table default - colour temperature, which is the
+	 * right default for these fixtures. */
+	colorInfo.currentHue256 = (u16)(pColor->currentHue) << 8;
+	colorInfo.currentSaturation256 = (u16)(pColor->currentSaturation) << 8;
+	colorInfo.hueRemainingTime = 0;
+	colorInfo.saturationRemainingTime = 0;
+
+	colorInfo.currentColorTemp256 = (u32)(pColor->colorTemperatureMireds) << 8;
+	colorInfo.colorTempRemainingTime = 0;
+	colorInfo.colorTempMinMireds = pColor->colorTempPhysicalMinMireds;
+	colorInfo.colorTempMaxMireds = pColor->colorTempPhysicalMaxMireds;
+
+	if(pColor->colorMode == ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS){
+		pColor->enhancedColorMode = ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS;
+
+		light_applyUpdate_16(&pColor->colorTemperatureMireds, &colorInfo.currentColorTemp256, &colorInfo.stepColorTemp256, &colorInfo.colorTempRemainingTime,
+								colorInfo.colorTempMinMireds, colorInfo.colorTempMaxMireds, FALSE);
+	}else{
+		pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+
+		light_applyUpdate(&pColor->currentHue, &colorInfo.currentHue256, &colorInfo.stepHue256, &colorInfo.hueRemainingTime,
+							ZCL_COLOR_ATTR_HUE_MIN, ZCL_COLOR_ATTR_HUE_MAX, TRUE);
+
+		light_applyUpdate(&pColor->currentSaturation, &colorInfo.currentSaturation256, &colorInfo.stepSaturation256, &colorInfo.saturationRemainingTime,
+							ZCL_COLOR_ATTR_SATURATION_MIN, ZCL_COLOR_ATTR_SATURATION_MAX, FALSE);
+	}
+#elif COLOR_RGB_SUPPORT
 	pColor->colorCapabilities = ZCL_COLOR_CAPABILITIES_BIT_HUE_SATURATION;
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
@@ -181,7 +234,21 @@ void tuyaLight_updateColor(void)
 	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
 	zcl_levelAttr_t *pLevel = zcl_levelAttrGet();
 
-#if COLOR_RGB_SUPPORT
+#if (COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT)
+	/* MOES: the ZCL colourMode attribute decides which half of the output
+	 * stage drives the light - exactly the routing hwLight_levelUpdate()
+	 * already does. Without it the CW/WW channels were unreachable from the
+	 * normal control path: every light_fresh() went through HSV2RGB whatever
+	 * the mode said, so a moveToColorTemperature moved an attribute and
+	 * nothing else. (hwLight_colorUpdate_colorTemperature() writes 0 to R/G/B
+	 * and hwLight_colorUpdate_HSV2RGB() writes 0 to CW/WW, so switching modes
+	 * turns the other pair off cleanly.) */
+	if(pColor->colorMode == ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS){
+		hwLight_colorUpdate_colorTemperature(pColor->colorTemperatureMireds, pLevel->curLevel);
+	}else{
+		hwLight_colorUpdate_HSV2RGB(pColor->currentHue, pColor->currentSaturation, pLevel->curLevel);
+	}
+#elif COLOR_RGB_SUPPORT
 	hwLight_colorUpdate_HSV2RGB(pColor->currentHue, pColor->currentSaturation, pLevel->curLevel);
 #elif COLOR_CCT_SUPPORT
 	hwLight_colorUpdate_colorTemperature(pColor->colorTemperatureMireds, pLevel->curLevel);
@@ -214,7 +281,8 @@ static s32 tuyaLight_colorTimerEvtCb(void *arg)
 									ZCL_COLOR_ATTR_HUE_MIN, ZCL_COLOR_ATTR_HUE_MAX, TRUE);
 		}
 	}
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	if(pColor->enhancedColorMode == ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS){
 		if(colorInfo.colorTempRemainingTime){
 			light_applyUpdate_16(&pColor->colorTemperatureMireds, &colorInfo.currentColorTemp256, &colorInfo.stepColorTemp256, &colorInfo.colorTempRemainingTime,
@@ -223,11 +291,18 @@ static s32 tuyaLight_colorTimerEvtCb(void *arg)
 	}
 #endif
 
+	/* Keep the timer alive while *any* compiled transition is still running.
+	 * With both modes present this has to be an OR across both halves - a
+	 * '#elif' here would have cancelled a colour-temperature fade the moment
+	 * hue and saturation happened to be idle, i.e. always. */
+	if(0
 #if COLOR_RGB_SUPPORT
-	if(colorInfo.saturationRemainingTime || colorInfo.hueRemainingTime){
-#elif COLOR_CCT_SUPPORT
-	if(colorInfo.colorTempRemainingTime){
+	   || colorInfo.saturationRemainingTime || colorInfo.hueRemainingTime
 #endif
+#if COLOR_CCT_SUPPORT
+	   || colorInfo.colorTempRemainingTime
+#endif
+	  ){
 		return 0;
 	}else{
 		colorTimerEvt = NULL;
@@ -309,6 +384,9 @@ static void tuyaLight_moveToHueProcess(zcl_colorCtrlMoveToHueCmd_t *cmd)
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	colorInfo.currentHue256 = (u16)(pColor->currentHue) << 8;
 
@@ -375,6 +453,9 @@ static void tuyaLight_moveHueProcess(zcl_colorCtrlMoveHueCmd_t *cmd)
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	colorInfo.currentHue256 = (u16)(pColor->currentHue) << 8;
 
@@ -423,6 +504,9 @@ static void tuyaLight_stepHueProcess(zcl_colorCtrlStepHueCmd_t *cmd)
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	colorInfo.currentHue256 = (u16)(pColor->currentHue) << 8;
 
@@ -468,6 +552,9 @@ static void tuyaLight_moveToSaturationProcess(zcl_colorCtrlMoveToSaturationCmd_t
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	colorInfo.currentSaturation256 = (u16)(pColor->currentSaturation) << 8;
 
@@ -504,6 +591,9 @@ static void tuyaLight_moveSaturationProcess(zcl_colorCtrlMoveSaturationCmd_t *cm
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	colorInfo.currentSaturation256 = (u16)(pColor->currentSaturation) << 8;
 
@@ -552,6 +642,9 @@ static void tuyaLight_stepSaturationProcess(zcl_colorCtrlStepSaturationCmd_t *cm
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	colorInfo.currentSaturation256 = (u16)(pColor->currentSaturation) << 8;
 
@@ -622,6 +715,11 @@ static void tuyaLight_moveToColorProcess(zcl_colorCtrlMoveToColorCmd_t *cmd)
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
+	colorInfo.hueRemainingTime = 0;
+	colorInfo.saturationRemainingTime = 0;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 
 }
@@ -643,6 +741,11 @@ static void tuyaLight_moveColorProcess(zcl_colorCtrlMoveColorCmd_t *cmd)
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
+	colorInfo.hueRemainingTime = 0;
+	colorInfo.saturationRemainingTime = 0;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 
 }
@@ -664,6 +767,11 @@ static void tuyaLight_stepColorProcess(zcl_colorCtrlStepColorCmd_t *cmd)
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
+	colorInfo.hueRemainingTime = 0;
+	colorInfo.saturationRemainingTime = 0;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 
 }
@@ -685,6 +793,9 @@ static void tuyaLight_enhancedMoveToHueProcess(zcl_colorCtrlEnhancedMoveToHueCmd
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_ENHANCED_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	switch(cmd->direction){
 		case COLOR_CTRL_DIRECTION_SHORTEST_DISTANCE:
@@ -719,6 +830,9 @@ static void tuyaLight_enhancedMoveHueProcess(zcl_colorCtrlEnhancedMoveHueCmd_t *
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_ENHANCED_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	switch(cmd->moveMode){
 		case COLOR_CTRL_MOVE_STOP:
@@ -751,6 +865,9 @@ static void tuyaLight_enhancedStepHueProcess(zcl_colorCtrlEnhancedStepHueCmd_t *
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
 	pColor->enhancedColorMode = ZCL_ENHANCED_COLOR_MODE_CURRENT_HUE_SATURATION;
+#if COLOR_CCT_SUPPORT
+	colorInfo.colorTempRemainingTime = 0;
+#endif
 
 	switch(cmd->stepMode){
 		case COLOR_CTRL_STEP_MODE_UP:
@@ -828,7 +945,9 @@ static void tuyaLight_colorLoopSetProcess(zcl_colorCtrlColorLoopSetCmd_t *cmd)
 	}
 }
 
-#elif COLOR_CCT_SUPPORT
+#endif	/* COLOR_RGB_SUPPORT */
+
+#if COLOR_CCT_SUPPORT
 
 /*********************************************************************
  * @fn      tuyaLight_moveToColorTemperatureProcess
@@ -847,6 +966,10 @@ static void tuyaLight_moveToColorTemperatureProcess(zcl_colorCtrlMoveToColorTemp
 
 	pColor->colorMode = ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS;
+#if COLOR_RGB_SUPPORT
+	colorInfo.hueRemainingTime = 0;
+	colorInfo.saturationRemainingTime = 0;
+#endif
 
 	colorInfo.colorTempMinMireds = pColor->colorTempPhysicalMinMireds;
 	colorInfo.colorTempMaxMireds = pColor->colorTempPhysicalMaxMireds;
@@ -886,6 +1009,10 @@ static void tuyaLight_moveColorTemperatureProcess(zcl_colorCtrlMoveColorTemperat
 
 	pColor->colorMode = ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS;
+#if COLOR_RGB_SUPPORT
+	colorInfo.hueRemainingTime = 0;
+	colorInfo.saturationRemainingTime = 0;
+#endif
 
 	if(cmd->colorTempMinMireds){
 		colorInfo.colorTempMinMireds = (cmd->colorTempMinMireds < pColor->colorTempPhysicalMinMireds) ? pColor->colorTempPhysicalMinMireds
@@ -948,6 +1075,10 @@ static void tuyaLight_stepColorTemperatureProcess(zcl_colorCtrlStepColorTemperat
 
 	pColor->colorMode = ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS;
+#if COLOR_RGB_SUPPORT
+	colorInfo.hueRemainingTime = 0;
+	colorInfo.saturationRemainingTime = 0;
+#endif
 
 	if(cmd->colorTempMinMireds){
 		colorInfo.colorTempMinMireds = (cmd->colorTempMinMireds < pColor->colorTempPhysicalMinMireds) ? pColor->colorTempPhysicalMinMireds
@@ -1008,7 +1139,8 @@ static void tuyaLight_stopMoveStepProcess(void)
 #if COLOR_RGB_SUPPORT
 	colorInfo.hueRemainingTime = 0;
 	colorInfo.saturationRemainingTime = 0;
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	colorInfo.colorTempRemainingTime = 0;
 #endif
 
@@ -1076,7 +1208,8 @@ status_t tuyaLight_colorCtrlCb(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId, void 
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_COLOR_LOOP_SET:
 				tuyaLight_colorLoopSetProcess((zcl_colorCtrlColorLoopSetCmd_t *)cmdPayload);
 				break;
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_MOVE_TO_COLOR_TEMPERATURE:
 				tuyaLight_moveToColorTemperatureProcess((zcl_colorCtrlMoveToColorTemperatureCmd_t *)cmdPayload);
 				break;

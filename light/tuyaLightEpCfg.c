@@ -45,6 +45,9 @@
 #define COLOR_TEMPERATURE_PHYSICAL_MAX	0x01C6//2200K
 #endif
 
+/* our effect control lives on the Tuya manufacturer cluster */
+#include "zcl_tuyaMfg.h"
+
 /**********************************************************************
  * TYPEDEFS
  */
@@ -74,6 +77,7 @@ const u16 tuyaLight_inClusterList[] =
 #endif
 #ifdef ZCL_LIGHT_COLOR_CONTROL
 	ZCL_CLUSTER_LIGHTING_COLOR_CONTROL,
+	ZCL_CLUSTER_TUYA_EFFECT,
 #endif
 #ifdef ZCL_ZLL_COMMISSIONING
 	ZCL_CLUSTER_TOUCHLINK_COMMISSIONING,
@@ -106,7 +110,12 @@ const af_simple_descriptor_t tuyaLight_simpleDesc =
 {
 	HA_PROFILE_ID,                      		/* Application profile identifier */
 #ifdef ZCL_LIGHT_COLOR_CONTROL
+#if (COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT)
+	/* extended colour light: hue/saturation/xy AND colour temperature */
+	HA_DEV_EXTENDED_COLOR_LIGHT,
+#else
 	HA_DEV_COLOR_DIMMABLE_LIGHT,
+#endif
 #else
 	#ifdef ZCL_LEVEL_CTRL
 		HA_DEV_DIMMABLE_LIGHT,              	/* Application device identifier */
@@ -319,7 +328,15 @@ zcl_lightColorCtrlAttr_t g_zcl_colorCtrlAttrs =
 	.colorMode						= ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS,
 	.options						= 0,
 	.enhancedColorMode				= ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS,
+#if (COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT)
+	.colorCapabilities				= ZCL_COLOR_CAPABILITIES_BIT_HUE_SATURATION
+									  | ZCL_COLOR_CAPABILITIES_BIT_ENHANCED_HUE
+									  | ZCL_COLOR_CAPABILITIES_BIT_COLOR_LOOP
+									  | ZCL_COLOR_CAPABILITIES_BIT_X_Y_ATTRIBUTES
+									  | ZCL_COLOR_CAPABILITIES_BIT_COLOR_TEMPERATURE,
+#else
 	.colorCapabilities				= ZCL_COLOR_CAPABILITIES_BIT_COLOR_TEMPERATURE,
+#endif
 	.numOfPrimaries					= 0,
 #if COLOR_RGB_SUPPORT
 	.currentHue						= 0x00,
@@ -329,7 +346,8 @@ zcl_lightColorCtrlAttr_t g_zcl_colorCtrlAttrs =
 	.colorLoopTime					= 0x0019,
 	.colorLoopStartEnhancedHue		= 0x2300,
 	.colorLoopStoredEnhancedHue		= 0x0000,
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	.colorTemperatureMireds			= COLOR_TEMPERATURE_PHYSICAL_MAX,
 	.colorTempPhysicalMinMireds		= COLOR_TEMPERATURE_PHYSICAL_MIN,
 	.colorTempPhysicalMaxMireds 	= COLOR_TEMPERATURE_PHYSICAL_MAX,
@@ -353,7 +371,8 @@ const zclAttrInfo_t lightColorCtrl_attrTbl[] =
     { ZCL_ATTRID_COLOR_LOOP_TIME,         			ZCL_DATA_TYPE_UINT16,   ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.colorLoopTime },
     { ZCL_ATTRID_COLOR_LOOP_START_ENHANCED_HUE,   	ZCL_DATA_TYPE_UINT16,   ACCESS_CONTROL_READ,     						 (u8*)&g_zcl_colorCtrlAttrs.colorLoopStartEnhancedHue },
     { ZCL_ATTRID_COLOR_LOOP_STORED_ENHANCED_HUE,  	ZCL_DATA_TYPE_UINT16,   ACCESS_CONTROL_READ,     						 (u8*)&g_zcl_colorCtrlAttrs.colorLoopStoredEnhancedHue },
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
     { ZCL_ATTRID_COLOR_TEMPERATURE_MIREDS,			ZCL_DATA_TYPE_UINT16,  	ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.colorTemperatureMireds },
     { ZCL_ATTRID_COLOR_TEMP_PHYSICAL_MIN_MIREDS,  	ZCL_DATA_TYPE_UINT16,  	ACCESS_CONTROL_READ,     						 (u8*)&g_zcl_colorCtrlAttrs.colorTempPhysicalMinMireds },
     { ZCL_ATTRID_COLOR_TEMP_PHYSICAL_MAX_MIREDS,  	ZCL_DATA_TYPE_UINT16,  	ACCESS_CONTROL_READ,     						 (u8*)&g_zcl_colorCtrlAttrs.colorTempPhysicalMaxMireds },
@@ -388,9 +407,36 @@ const zcl_specClusterInfo_t g_tuyaLightClusterList[] =
 #ifdef ZCL_LIGHT_COLOR_CONTROL
 	{ZCL_CLUSTER_LIGHTING_COLOR_CONTROL, MANUFACTURER_CODE_NONE, 	ZCL_COLOR_ATTR_NUM,		lightColorCtrl_attrTbl,	zcl_lightColorCtrl_register, tuyaLight_colorCtrlCb},
 #endif
+	{ZCL_CLUSTER_TUYA_EFFECT,		 	 TUYA_EFFECT_MANU_CODE,		0, 						NULL,					zcl_tuyaMfg_register,		 NULL},
 };
 
 u8 TUYALIGHT_CB_CLUSTER_NUM = (sizeof(g_tuyaLightClusterList)/sizeof(g_tuyaLightClusterList[0]));
+
+/* Clusters registered outside g_tuyaLightClusterList, all of them *after* it
+ * in user_app_init(): green power on GREEN_POWER_ENDPOINT (gp_init), OTA on
+ * our endpoint (ota_init), and WWAH when enabled (wwah_init). Touchlink is
+ * advertised in the simple descriptor but zcl_touchlink_register() is never
+ * called, so it costs no slot. */
+#define TUYALIGHT_EXTRA_CLUSTER_NUM		( (ZCL_GP_SUPPORT   ? 1 : 0) \
+										+ (ZCL_OTA_SUPPORT  ? 1 : 0) \
+										+ (ZCL_WWAH_SUPPORT ? 1 : 0) )
+
+/* zcl_registerCluster() returns ZCL_STA_INSUFFICIENT_SPACE once
+ * ZCL_CLUSTER_NUM_MAX entries are used, and zcl_register() just gives up
+ * quietly - no warning, no log, nothing on the wire. Overflowing this table
+ * therefore shows up as a *silently missing cluster*, and because OTA is
+ * registered near the end of the sequence it is one of the first to be lost.
+ * A light with no OTA cluster is a light that comes out of the ceiling.
+ *
+ * Currently 8 + 2 = 10 of 11. Exactly one slot spare: if you add a cluster,
+ * raise ZCL_CLUSTER_NUM_MAX in light/stack_cfg.h in the same commit.
+ *
+ * Negative-array-size idiom rather than _Static_assert: the tc32 toolchain
+ * predates C11. A failure here reads as
+ *   "size of array 'moes_zclClusterTableMustFit' is negative". */
+typedef char moes_zclClusterTableMustFit[
+	(((sizeof(g_tuyaLightClusterList)/sizeof(g_tuyaLightClusterList[0]))
+		+ TUYALIGHT_EXTRA_CLUSTER_NUM) <= ZCL_CLUSTER_NUM_MAX) ? 1 : -1];
 
 
 /**********************************************************************
@@ -574,7 +620,8 @@ nv_sts_t zcl_colorCtrlAttr_save(void)
 
 		needSave = TRUE;
 	}
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	if(st == NV_SUCC){
 		if((zcl_nv_colorCtrl.colorTemperatureMireds != g_zcl_colorCtrlAttrs.colorTemperatureMireds) || (zcl_nv_colorCtrl.startUpColorTemperatureMireds != g_zcl_colorCtrlAttrs.startUpColorTemperatureMireds)){
 			zcl_nv_colorCtrl.colorTemperatureMireds = g_zcl_colorCtrlAttrs.colorTemperatureMireds;
@@ -626,7 +673,8 @@ nv_sts_t zcl_colorCtrlAttr_restore(void)
 		g_zcl_colorCtrlAttrs.currentHue = zcl_nv_colorCtrl.currentHue;
 		g_zcl_colorCtrlAttrs.currentSaturation = zcl_nv_colorCtrl.currentSaturation;
 	}
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	if(st == NV_SUCC){
 		g_zcl_colorCtrlAttrs.colorTemperatureMireds = zcl_nv_colorCtrl.colorTemperatureMireds;
 		g_zcl_colorCtrlAttrs.startUpColorTemperatureMireds = zcl_nv_colorCtrl.startUpColorTemperatureMireds;

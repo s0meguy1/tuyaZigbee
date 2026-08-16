@@ -140,7 +140,8 @@ typedef struct{
 	u16	colorLoopTime;
 	u16 colorLoopStartEnhancedHue;
 	u16 colorLoopStoredEnhancedHue;
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	u16 colorTemperatureMireds;
 	u16 colorTempPhysicalMinMireds;
 	u16 colorTempPhysicalMaxMireds;
@@ -171,7 +172,8 @@ typedef struct {
 #if COLOR_RGB_SUPPORT
 	u8	currentHue;
 	u8	currentSaturation;
-#elif COLOR_CCT_SUPPORT
+#endif
+#if COLOR_CCT_SUPPORT
 	u16	colorTemperatureMireds;
 	u16	startUpColorTemperatureMireds;
 #endif

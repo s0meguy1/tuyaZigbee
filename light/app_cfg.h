@@ -73,7 +73,7 @@ extern "C" {
 #endif
 
 /* Watch dog module */
-#define MODULE_WATCHDOG_ENABLE						0
+#define MODULE_WATCHDOG_ENABLE						1
 
 /* UART module */
 #if ZBHCI_UART
