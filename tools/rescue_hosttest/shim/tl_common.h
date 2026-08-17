@@ -46,6 +46,16 @@ typedef enum hw_timer_sts_e {
 void drv_hwTmr_init(u8 tmrIdx, u8 mode);
 hw_timer_sts_t drv_hwTmr_set(u8 tmrIdx, u32 t_us, timerCb_t func, void *arg);
 
+/* --- minimal chip_8258/timer.h surface used by the build-10 one-shot re-arm ---
+ * moes_liveness.c now re-arms the hw timer itself from the sample callback
+ * (stop -> init -> capture -> start). The real ones are chip_8258/timer.h
+ * inlines plus libdrivers_8258.a; the test driver models them here so the
+ * re-arm is observable instead of silently ignored. */
+void timer_set_init_tick(u8 tmrIdx, u32 initTick);
+void timer_set_cap_tick(u8 tmrIdx, u32 capTick);
+void timer_stop(u8 tmrIdx);
+void timer_start(u8 tmrIdx);
+
 /* --- hooks the test driver implements --- */
 nv_sts_t nv_flashReadNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf);
 nv_sts_t nv_flashWriteNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf);

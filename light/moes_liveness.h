@@ -34,6 +34,12 @@
  *     joined-blind: it does not read zb_isDeviceJoinedNwk(), so a class-2
  *     joined-but-silent wedge trips it exactly like a class-1 unjoined wedge.
  *
+ * Build 10 makes that sampler a one-shot: the callback explicitly re-arms the
+ * hardware timer (stop -> reload init+capture -> start) instead of relying on
+ * the SDK's free-run periodic re-arm, which did not produce a real 1 s cadence
+ * on silicon (bughunt/fuse_no_fire_b09.md §1d/§5; rationale lives in
+ * moes_liveness.c above the re-arm).
+ *
  * The rule is therefore:
  *
  *     once this boot has had network credentials (armed), if the cooperative

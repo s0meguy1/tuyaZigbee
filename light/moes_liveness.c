@@ -19,6 +19,12 @@
 /* 60 s of no progress at the 1 s sample rate. */
 #define MOES_LIVENESS_PROGRESS_RESET_TICKS   (MOES_LIVENESS_PROGRESS_RESET_S * 1000U / MOES_LIVENESS_SAMPLE_MS)
 
+/* The sample period in hardware-timer ticks, for the explicit one-shot re-arm
+ * in moes_livenessHwSampleCb. TIMER_IDX_0 counts the 48 MHz system clock, so
+ * MOES_LIVENESS_SAMPLE_MS * 1000 us * 48 ticks/us = 48 000 000 ticks = 1 s.
+ * (TIMER_TICK_1US_GET is the SDK's µs->tick scale from drv_timer.h.) */
+#define MOES_LIVENESS_SAMPLE_TICKS   ((u32)(MOES_LIVENESS_SAMPLE_MS) * 1000UL * TIMER_TICK_1US_GET(TIMER_IDX_0))
+
 /* volatile: written in task context (the progress ticker, the BDB arm/activity
  * hooks) and read in the hardware-timer IRQ. The compiler must not cache them
  * across the IRQ callback. */
@@ -72,29 +78,61 @@ static s32 moes_livenessHwSampleCb(void *arg)
 {
 	(void)arg;
 
-	if(!s_armed){
+	if(s_armed){
+		if(s_progress != s_lastProgress){
+			s_lastProgress = s_progress;
+			s_noProgress   = 0;
+		}else if(++s_noProgress >= MOES_LIVENESS_PROGRESS_RESET_TICKS){
+			/* Wedged regardless of joined state. Unmarked reset (see above). */
+			SYSTEM_RESET();
+			s_noProgress = 0;   /* unreachable guard for a port where reset returns */
+		}
+	}else{
 		/* Factory-new/pairing: nothing to return to. Keep the baseline fresh
 		 * so arming later never inherits a stale no-progress stretch. */
 		s_lastProgress = s_progress;
 		s_noProgress   = 0;
-		return MOES_LIVENESS_SAMPLE_MS * 1000;
 	}
 
-	if(s_progress != s_lastProgress){
-		s_lastProgress = s_progress;
-		s_noProgress   = 0;
-	}else if(++s_noProgress >= MOES_LIVENESS_PROGRESS_RESET_TICKS){
-		/* Wedged regardless of joined state. Unmarked reset (see above). */
-		SYSTEM_RESET();
-		s_noProgress = 0;   /* unreachable guard for a port where reset returns */
-	}
+	/* Build 10 cadence fix — bughunt/fuse_no_fire_b09.md §1d/§5.
+	 *
+	 * Build 09 let drv_hwTmr_irq_process() re-arm Timer0 from this callback's
+	 * return value. For TIMER_IDX_0/1/2 the SDK's re-arm is hwTimerSet():
+	 *
+	 *     timer_set_init_tick(tmrIdx, 0);   // write reg_tmr_tick (0x630)
+	 *     timer_set_cap_tick(tmrIdx, tick); // write reg_tmr_capt (0x624)
+	 *
+	 * i.e. it writes the init and capture registers while the free-running
+	 * 32-bit counter is STILL RUNNING. TIMER_MODE_SCLK is documented as "free
+	 * run from 0 to 0xffffffff" (drv_timer.h), and there is no production
+	 * precedent in this firmware for a periodic Timer0/1/2 re-arm: the MAC
+	 * CSMA timer is TIMER_IDX_3, whose re-arm is the different, absolute
+	 * stimer_set_irq_capture(tick + clock_time()) path. The build-09 field
+	 * result (fuse silent inside a 10-minute observation) is consistent with
+	 * reg_tmr_tick NOT resetting a running counter, which turns the intended
+	 * 1 s cadence into the 32-bit wrap cadence (~89 s at 48 MHz) and the
+	 * 60-sample fuse into ~89 minutes.
+	 *
+	 * The INITIAL arm is not suspect: drv_hwTmr_set() -> hwTmr_setAbs() writes
+	 * the same init/capture and then timer_start(), and a freshly enabled B85
+	 * timer loads its init tick. The re-arm path is broken only because it
+	 * omits that stop/start, so the counter is never re-loaded. The fix is to
+	 * make every sample an explicit one-shot: stop, reload init+capture, and
+	 * start again - exactly the proven initial-arm sequence plus the stop that
+	 * a re-arm of an already-running free-run timer requires.
+	 *
+	 * We return 0 so drv_hwTmr_irq_process() keeps the driver state as TIMER_WTO
+	 * and does not replace our fresh expiry. It still calls hwTimerSet() once
+	 * after we return; that extra init_tick/capt write is harmless because the
+	 * counter has already been reloaded by the stop/start above, and the capture
+	 * value it writes is the same 48M ticks. The next expiry is driven by the
+	 * counter we just restarted, not by the suspect return-value re-arm. */
+	timer_stop(TIMER_IDX_0);
+	timer_set_init_tick(TIMER_IDX_0, 0);
+	timer_set_cap_tick(TIMER_IDX_0, MOES_LIVENESS_SAMPLE_TICKS);
+	timer_start(TIMER_IDX_0);
 
-	/* drv_timer.c re-arms the hw timer from this return value, which is in
-	 * MICROSECONDS (drv_timer.c:171 multiplies it by TIMER_TICK_1US_GET
-	 * again). The redesign paper's pseudo returned
-	 * "MOES_LIVENESS_SAMPLE_MS * TIMER_TICK_1US_GET(...) / 1000", which would
-	 * be ~48 us on a 48 MHz part - a spin. Corrected here to 1 s. */
-	return MOES_LIVENESS_SAMPLE_MS * 1000;
+	return 0;
 }
 
 /*********************************************************************
@@ -116,9 +154,13 @@ static void moes_livenessEnsureTimer(void)
 
 	if(!s_hwArmed){
 		drv_hwTmr_init(TIMER_IDX_0, TIMER_MODE_SCLK);
-		drv_hwTmr_set(TIMER_IDX_0, MOES_LIVENESS_SAMPLE_MS * 1000,
-		              moes_livenessHwSampleCb, NULL);
-		s_hwArmed = TRUE;
+		/* Only latch "armed" when the set actually took. If the driver says the
+		 * index is already running (or invalid) this boot stays un-armed and the
+		 * next arm call retries; that failure is invisible in the field, but at
+		 * least we do not pretend the IRQ sampler is running when it is not. */
+		hw_timer_sts_t st = drv_hwTmr_set(TIMER_IDX_0, MOES_LIVENESS_SAMPLE_MS * 1000,
+		                                  moes_livenessHwSampleCb, NULL);
+		s_hwArmed = (st == HW_TIMER_SUCC);
 	}
 }
 

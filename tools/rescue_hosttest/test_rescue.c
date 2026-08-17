@@ -131,6 +131,18 @@ static struct {
 	int        live;
 } sim_hwTimers[TIMER_NUM];
 
+/* The raw Timer0/1/2 register surface the build-10 liveness callback writes
+ * when it re-arms the sampler itself (chip_8258/timer.h: timer_stop,
+ * timer_set_init_tick, timer_set_cap_tick, timer_start). This is the
+ * observable the new scenario asserts on: every sample must drive a fresh
+ * stop->init->capture->start, not a fire-and-forget callback. */
+static struct {
+	u32 initTick;
+	u32 capTick;
+	int enabled;
+	int rearmCount;          /* timer_start() calls on this index */
+} sim_hwRegs[TIMER_NUM];
+
 void drv_hwTmr_init(u8 tmrIdx, u8 mode)
 {
 	(void)mode;
@@ -138,18 +150,56 @@ void drv_hwTmr_init(u8 tmrIdx, u8 mode)
 		return;
 	}
 	memset(&sim_hwTimers[tmrIdx], 0, sizeof(sim_hwTimers[tmrIdx]));
+	memset(&sim_hwRegs[tmrIdx], 0, sizeof(sim_hwRegs[tmrIdx]));
 }
 
 hw_timer_sts_t drv_hwTmr_set(u8 tmrIdx, u32 t_us, timerCb_t func, void *arg)
 {
-	(void)t_us;               /* the host model is period-agnostic, like tick_all */
 	if(tmrIdx >= TIMER_NUM){
 		return HW_TIMER_INVALID;
 	}
+	/* Model the real hwTmr_setAbs() sequence: load init+capture, then start.
+	 * t_us is still "period-agnostic" for the fire-N-times scheduler below,
+	 * but recording the ticks lets the re-arm scenario prove the callback
+	 * reloads the same capture each time. */
 	sim_hwTimers[tmrIdx].cb   = func;
 	sim_hwTimers[tmrIdx].arg  = arg;
 	sim_hwTimers[tmrIdx].live = 1;
+
+	sim_hwRegs[tmrIdx].initTick = 0;
+	sim_hwRegs[tmrIdx].capTick  = t_us * TIMER_TICK_1US_GET(tmrIdx);
+	sim_hwRegs[tmrIdx].enabled  = 1;
+	sim_hwRegs[tmrIdx].rearmCount++;
 	return HW_TIMER_SUCC;
+}
+
+void timer_set_init_tick(u8 tmrIdx, u32 initTick)
+{
+	if(tmrIdx < TIMER_NUM){
+		sim_hwRegs[tmrIdx].initTick = initTick;
+	}
+}
+
+void timer_set_cap_tick(u8 tmrIdx, u32 capTick)
+{
+	if(tmrIdx < TIMER_NUM){
+		sim_hwRegs[tmrIdx].capTick = capTick;
+	}
+}
+
+void timer_stop(u8 tmrIdx)
+{
+	if(tmrIdx < TIMER_NUM){
+		sim_hwRegs[tmrIdx].enabled = 0;
+	}
+}
+
+void timer_start(u8 tmrIdx)
+{
+	if(tmrIdx < TIMER_NUM){
+		sim_hwRegs[tmrIdx].enabled  = 1;
+		sim_hwRegs[tmrIdx].rearmCount++;
+	}
 }
 
 static int hw_anyTimerLive(void)
@@ -270,6 +320,7 @@ static void sim_reset_sim(void)
 {
 	memset(sim_timers, 0, sizeof(sim_timers));
 	memset(sim_hwTimers, 0, sizeof(sim_hwTimers));
+	memset(sim_hwRegs, 0, sizeof(sim_hwRegs));
 	joined = 0;
 	host_resetCount = 0;
 	host_skipWrites = 0;
@@ -684,6 +735,39 @@ static void t_wedge_silence_forces_reset(void)
 	CHECK(host_skipWritesAtReset == 0, "the IRQ reset must be unmarked (no moes_resetSkipNextBoot)");
 }
 
+static void t_hw_sample_callback_explicitly_rearms(void)
+{
+	printf("  each hw sample explicitly reloads Timer0 (stop -> init -> capture -> start)\n");
+	sim_reset_sim();
+
+	moes_livenessBootedOnNetwork();
+	CHECK(hw_anyTimerLive(), "arming must start the hw sampler");
+
+	/* The initial drv_hwTmr_set() is one timer_start(). */
+	CHECK(sim_hwRegs[TIMER_IDX_0].rearmCount == 1,
+		  "initial arm must be one start, got %d", sim_hwRegs[TIMER_IDX_0].rearmCount);
+	CHECK(sim_hwRegs[TIMER_IDX_0].enabled == 1,
+		  "hw timer must be enabled after arming");
+
+	u32 expectedCap = (u32)MOES_LIVENESS_SAMPLE_MS * 1000UL * TIMER_TICK_1US_GET(TIMER_IDX_0);
+	CHECK(sim_hwRegs[TIMER_IDX_0].capTick == expectedCap,
+		  "capTick must be the 1 s tick count, got %u", sim_hwRegs[TIMER_IDX_0].capTick);
+
+	/* Fire the sampler three times. Each callback must re-arm by itself; a
+	 * broken re-arm would leave the timer stopped and the fuse silent. */
+	tick_hw_all(3);
+	CHECK(sim_hwRegs[TIMER_IDX_0].rearmCount == 4,
+		  "three samples must add three re-arms, got %d", sim_hwRegs[TIMER_IDX_0].rearmCount);
+	CHECK(sim_hwRegs[TIMER_IDX_0].enabled == 1,
+		  "the timer must still be enabled after the re-arm");
+	CHECK(sim_hwRegs[TIMER_IDX_0].initTick == 0,
+		  "each re-arm must reload init tick 0");
+	CHECK(sim_hwRegs[TIMER_IDX_0].capTick == expectedCap,
+		  "each re-arm must reload the 1 s capture");
+	CHECK(host_resetCount == 0,
+		  "three no-progress samples must not yet reach the 60-sample fuse");
+}
+
 static void t_liveness_class2_wedge_resets_while_joined(void)
 {
 	printf("  class-2 wedge (joined-but-silent) still forces an unmarked reset\n");
@@ -1054,6 +1138,7 @@ int main(void)
 	run_isolated("watchdog_hang_chain",     t_watchdog_hang_chain);
 
 	run_isolated("liveness_wedge_reset",        t_wedge_silence_forces_reset);
+	run_isolated("liveness_hw_sample_rearms",   t_hw_sample_callback_explicitly_rearms);
 	run_isolated("liveness_activity_suppresses",t_stack_activity_suppresses_reset);
 	run_isolated("liveness_rejoin_restarts",    t_rejoin_success_restarts_the_fuse);
 	run_isolated("liveness_pairing_never_reset",t_pairing_device_never_resets);

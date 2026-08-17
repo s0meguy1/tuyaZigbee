@@ -373,3 +373,166 @@ capture pins the descriptor format; then mirror it byte-for-byte in `ota.c`.
 - No code edits, no commits, no device access. Working artifacts in `/tmp/ism`
   (disassembly of `bench_full_1.bin`/`bench_full_2.bin` bootloader and app
   regions, correction scripts).
+
+---
+
+## 10. 2026-08-16 addendum — descriptor-gate certainty pass + build-09 OTA verdict
+
+**New hardware data point (16 Aug ~01:46–01:48 UTC):** build 09 (which carries
+the §7 recipe: `0x4B`@`0x70008` + 12-byte descriptor `{0x70001, size, 1}`@`0xF7000`
++ unconditional reset, verified present in the shipped image) completed an
+ours→ours OTA download ("update successful" 01:46:09), reset and rejoined
+01:48:14, but came back as **build 09** — the bootloader declined the staged
+build 10 again. The descriptor code is present in the image, so this is now an
+**encoding** test, not an absence test.
+
+### 10.1 (a) Guard `0x668E..0x6694` — RESOLVED
+
+True bytes (read-artifact corrected; both dumps are identical across this range,
+so there is no cross-pass disambiguation and the values below are the only
+coherent instruction stream):
+
+```
+0x6680  tloadr r3,[r7,#4]     ; r3 = word1
+0x6682  tadds r1,r3,#1        ; r1 = word1+1        (dead)
+0x6684  tmovs r0,#5           ; r0 = 5              (dead)
+0x6686  tloadrb r2,[r7,#8]    ; r2 = byte8
+0x6688  tadds r3,r2,r3        ; r3 = byte8 + word1  (raw f3 e8 -> true d3 e8)
+0x668a  tloadr r2,[r7,#0]     ; r2 = word0
+0x668c  tcmp r2,r3            ; word0 vs (byte8+word1)
+0x668e  tjne 0x6692           ; raw 00 e1 -> true c1 00   (NOT 0x669a as §3.2 guessed)
+0x6690  tj   0x6880           ; raw f6 c0 -> true f6 80   (NOT 0x6680 as §3.2 guessed)
+0x6692  tmovs r3,#0           ; raw 00 e3 -> true a3 00
+0x6694  tstorerb r3,[r7,#8]   ; byte8 := 0  (state 0)
+```
+
+The two branch targets in §3.2 were wrong (that pass resolved them against the
+wrong base address). Corrected control flow:
+
+- `word0 != byte8+word1` (erased all-FF, or any wrong descriptor) → `tjne 0x6692`
+  → byte8 := 0 → dispatch state 0 → write `0x800602` → reboot. **This provably
+  bypasses the copy** — it never reaches state 1/2/3.
+- `word0 == byte8+word1` (the stock descriptor) → `tj 0x6880` (timer2 helper),
+  which returns via `tjex lr` to `0x6680`. The downstream of this accept branch
+  is still **UNCERTAIN** (§10.6), but the accept/reject criterion is now SOLID.
+
+All-FF arithmetic: `byte8=0xFF`, `word1=0xFFFFFFFF`, `word0=0xFFFFFFFF` →
+`byte8+word1 = 0x1_0000_00FE` (truncated `0xFE`) `!= 0xFFFFFFFF` → not-equal →
+state 0. Matches the 22:05 UTC bench observation (erased descriptor skips).
+
+### 10.2 (b) word1 / word0 / byte8 — RESOLVED (word1 is NOT size)
+
+Stock app write site `0x2DE20` decoded (cross-checked against `bench_full_2.bin`):
+
+```
+0x2de52  tmovs r3,#0xE0       ; raw e0 e3 -> true e0 a3
+0x2de54  tshftls r3,r3,#11    ; raw fb f2 -> true db f2   (source r3, shift 11)
+0x2de56  tstorer r3,[sp,#4]   ; word1 = 0xE0 << 11 = 0x70000
+```
+
+The stock descriptor is exactly `{word0=0x70001, word1=0x70000, byte8=1}`.
+`word1` is the **staging base address 0x70000**, not size, not CRC, not flags.
+The bootloader consumer confirms it: state 1 (`0x675E`) does `r0 = [r7+4]`
+(word1) then `flash_read(r0, 0x100, headerBuf)` — it uses word1 as the **flash
+address** of the staged image header.
+
+Consequences:
+
+- `word0` must equal `byte8 + word1 = 1 + 0x70000 = 0x70001` — word0 is fixed.
+- `byte8 = 1` selects state 1 = start of install. It is "install", not "skip".
+- Build 09 wrote `word1 = size` (from staged header `+0x18`). Guard:
+  `0x70001 != 1 + size` (size ≈ 0x31xxx, not 0x70000) → not-equal → state 0 →
+  skip. **This is the build-09 decline.**
+
+### 10.3 (c) State-4 write-back `0x6614` — PARTIALLY RESOLVED
+
+```
+0x6616  tmovs r4,#0xF7 ; r4<<=12  -> r4 = 0xF7000
+0x661c  tjl 0x6118               ; sector-erase 0xF7000
+0x6620  r2 = 0x847100
+0x6622  r1 = [r2+8] (byte8) ; r3 = [r2+4] (word1)
+0x6626  r3 = r5 + r3 ; [r2+0] = r3 ; word0 := r5 + word1
+0x662e  tjl 0x614C               ; flash_write(0xF7000, 12, 0x847100)
+```
+
+It erases the `0xF7000` sector, then writes 12 bytes with `word0 := r5 + word1`.
+It does **not** end erased in principle — the write is real. The exact `r5` at
+state 4 is **UNCERTAIN** (r5 = incoming r9; state 2 zeroes r5 then uses it as the
+sector-erase loop counter, so at state 4 it holds the sector count). The bench
+observation of all-FF at `0xF7000` after the 08-15 install is therefore **not**
+explained by a clean "write-back leaves it erased"; it is either a failed/omitted
+write or a later erase. Mark the "ends erased" mechanism UNCERTAIN.
+
+### 10.4 (d) Reboot register + staging erase
+
+- State 0 (`0x67E6..0x67EA`): `r3 = 0x800602; tstorerb r2,[r3]; tj 0x66ae`. The
+  value is `r2`, which is `0x08` on the guard-reject path (`0x66aa
+  tmovs r2,#8`). The SDK `REBOOT()` uses `0x88`; this bootloader writes `0x08`.
+  Whether bit3 (`0x08`) alone is a full reboot vs the SDK's `0x88` is UNCERTAIN,
+  but the write target `0x800602` is SOLID.
+- The install flow does **not** erase staging (`0x70000`) and does **not** clear
+  the `0x4B` flag. Consistent with today's "staging NOT erased after
+  failed/absent install".
+
+### 10.5 PATH question — ota_mcuReboot IS reached (not the blocker)
+
+Traced the vendored SDK OTA flow in `build/tl_zigbee_sdk/zigbee/ota/ota.c`:
+
+- `ota_upgradeEndRspHandler` (ota.c:1644) does **not** call `ota_mcuReboot`
+  directly. On success it sets `zcl_attr_imageUpgradeStatus` to
+  COUNT_DOWN/WAITING_TO_UPGRADE and calls `ota_upgradeWait()` (a timer), then
+  posts `OTA_EVT_IMAGE_DONE`.
+- The timer `ota_upgradeWaitCb` → `ota_upgrade()` (ota.c:774) →
+  `ota_upgradeComplete(ZCL_STA_SUCCESS)` (ota.c:627) → posts `OTA_EVT_COMPLETE`.
+- The app callback `tuyaLight_otaProcessMsgHandler` (light/zb_appCb.c:326)
+  handles `OTA_EVT_COMPLETE` and calls `ota_mcuReboot()` at zb_appCb.c:352 —
+  unconditional on success, no compile-flag/imageValidity gate around the call
+  itself.
+- `ota_mcuReboot()` (ota.c:185) writes the `0x4B` flag + 12-byte descriptor,
+  then `SYSTEM_RESET()` at ota.c:287.
+
+The observed ~2 min gap (01:46:09 success → 01:48:14 rejoin) matches the
+`upgradeTime`/`notifyDelay` timer path. The device resetting and rejoining is
+itself evidence `ota_mcuReboot` ran (it is the only OTA-path reset). So the
+descriptor **was** written; the decline is the encoding, not the path. (Caveat:
+if the timer were starved by the liveness wedge, the reset could be delayed or
+omitted — but the rejoin shows it fired here.)
+
+### 10.6 Final accept criteria + chicken-and-egg
+
+The bootloader's full accept criteria are:
+
+1. Descriptor at `0xF7000`: `word0 == byte8 + word1` with `byte8 == 1` — i.e.
+   exactly `{word0=0x70001, word1=0x70000, byte8=1}`.
+2. Staged image header at `0x70000`: `header[8] == 0x4B` (single byte).
+3. Staged image size field at header `+0x18` bounds the copy (read in state 1).
+4. No CRC, no 4-byte magic, no version check — already established in §4 and
+   still holds.
+
+Chicken-and-egg: an already-converted unit has no stock app, so the descriptor
+can only come from our `ota_mcuReboot`. Build 09 wrote `word1 = size`, which
+fails criterion 1, so the guard forces state 0 (reboot) and the copy is never
+entered — the unit stays on the old image. A stock unit "always works" because
+its own OTA-complete path writes the exact descriptor `{0x70001, 0x70000, 1}`
+that criterion 1 demands. There is no hardware lockout; it is a byte-level
+encoding mismatch, and the fix is a one-word change.
+
+Remaining UNCERTAIN: the accept branch's downstream (`tj 0x6880` → timer2 helper
+→ `tjex lr` back to `0x6680`). Static analysis says it re-enters the guard; how
+a valid descriptor ultimately reaches the state-1 copy is not yet pinned. It does
+not affect the accept/reject boundary or the build-11 fix.
+
+### 10.7 Build-11 patch implied
+
+`build/tl_zigbee_sdk/zigbee/ota/ota.c:251` — replace the size read with the
+staging base:
+
+```c
+/* before (build 09): */
+flash_read(newAddr + 0x18, 4, (u8 *)&installDesc[1]); /* word1 = size  -> WRONG */
+
+/* after (build 11): */
+installDesc[1] = 0x00070000u;                          /* word1 = staging base */
+```
+
+(`installDesc[0] = 0x00070001u` and `installDesc[2] = 1` stay unchanged.)

@@ -203,7 +203,7 @@ Vendored SDK patches that must survive an SDK update:
 | `apps/common/main.c` | `MOES_NOBOOT_MIGRATION` hook | harmless today (feature is off) |
 | `zigbee/ota/ota.c` | `drv_wd_clear()` inside `ota_newImageValid()` CRC loop | the OTA validation CRC loop can watchdog-reset the device mid-commit-path |
 | `zigbee/ota/ota.c` | `ota_mcuReboot()` writes the `0x4b` staging flag with `flash_write()` and resets unconditionally (never gated on a verify result) | the ours->ours install silently never commits — updates download but never install |
-| `zigbee/ota/ota.c` | `ota_mcuReboot()` also writes the 12-byte install descriptor `{0x70001, size, 1}` at `0xF7000` | ours->ours OTA downloads but the Tuya bootloader's install state machine never commits — updates never install |
+| `zigbee/ota/ota.c` | `ota_mcuReboot()` also writes the 12-byte install descriptor `{0x70001, 0x70000, 1}` at `0xF7000` — word1 is the constant `0x00070000`, **not** the image size (build 11; the build-09 `size` encoding downloads fine but the bootloader's guard `word0 == byte8 + word1` rejects it and the install never commits — bughunt/install_sm.md §10) | ours->ours OTA downloads but the Tuya bootloader's install state machine never commits — updates never install |
 | `platform/chip_8258/spi_i.h` | bound `mspi_wait()` with `MSPI_WAIT_MAX_ITER 20000u` | the unbounded IRQ-off flash busy-wait hang returns |
 
 **Applied as of build 06** — both are live in the working-tree vendored SDK and
