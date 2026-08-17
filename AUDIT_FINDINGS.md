@@ -237,7 +237,8 @@ SYSTEM_RESET();
 `MOES_EDITING_GUIDE.md` §1.3 says the bootloader region must never be written.
 If the image left at `0x40000` does not boot — and it would not, see
 `FALLBACK_DESIGN.md` §6 — then *nothing* boots: bootloader gone, `0x8000`
-gone, no working wired write path. That is 46 ladders, not one.
+gone, no working wired write path. That can strand the deployed fleet, not just
+one fixture.
 
 It also consumed RAM-code budget for no benefit.
 
@@ -326,8 +327,9 @@ history, broken automations.
 
 Not a brick (the light still interviews, still matches the fingerprint, still
 gets its converter and therefore still gets OTA), but exactly the kind of
-thing you do not want to discover across 46 fixtures. One unit has been dumped
-and stores it lowercase; the other 45 have not been checked.
+thing you do not want to discover across deployed fixtures. One sampled unit
+has been dumped and stores it lowercase; the remaining fleet has not been
+checked.
 
 **Fixed** — commit `d0285ce`. Accept `A-F` as well.
 
@@ -367,7 +369,7 @@ attribute table publishes `colorTemperatureMireds` with physical min/max, and
 header comment claims both modes "live side by side".
 
 LOW by the §1 risk model — it cannot cost OTA — but it is the largest
-*functional* defect found, and on 46 CCT downlights it is the point of the
+*functional* defect found, and on deployed CCT downlights it is the point of the
 fixture.
 
 **Fixed, in its own commit** — `5d932a6`, separate from the safety work so it

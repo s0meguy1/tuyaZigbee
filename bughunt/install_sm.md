@@ -1,5 +1,13 @@
 # Real bootloader install state machine — full transcription + reset semantics
 
+> ## Current correction (2026-08-17)
+> The working descriptor encoding is `{0x70001, 0x70000, 1}`: descriptor
+> word1 is the staging-bank constant `0x70000`, **not** image size. The static
+> guard is `word0 == byte8 + word1`. Build 09's image-size encoding declines
+> installation. Build 11/12 contain the static correction, but an
+> ours-to-ours installation is still unproven on silicon. Treat the older
+> transcript below as historical analysis where it conflicts with this notice.
+
 **Verdict up front:** the stock bootloader (`0x0..0x6A0C`) is a **5-state install
 machine**, not the SDK `bootLoader`. Its gate is **single-byte `0x4B` at staged
 header `+8`** plus a size-field read at `+0x18` — and **no CRC of any kind**: the

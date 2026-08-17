@@ -23,7 +23,7 @@ Thresholds (see OTA_TEST_PLAN.md)
 Usage
 -----
   # watch one light for 15 minutes (the soak gate)
-  ./announce_watch.py --ieee 0xa4c138…c03e --minutes 15
+  ./announce_watch.py --ieee 0x<IEEE> --minutes 15
 
   # watch everything (useful while a rollout is running)
   ./announce_watch.py --minutes 30

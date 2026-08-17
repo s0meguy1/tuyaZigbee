@@ -1,7 +1,7 @@
 # OTA speed analysis — why 201,570 B took 54 minutes
 
 **Date:** 2026-08-15
-**Device:** `0xa4c138…d282` (build 04 conversion image, served from
+**Device:** `<redacted-device>` (build 04 conversion image, served from
 `<ota-server>:8093`).
 **Measured result:** 201,570 bytes in 3,235 s ≈ **62 B/s**, zero aborts, lqi
 255. The same bytes at the documented 50 B / 250 ms would take ~17 min, so
@@ -56,7 +56,7 @@ Read-only inspection of the container found:
 `log.log:3468`:
 
 ```
-[2026-08-15 09:25:10] zh:controller:ota: OTA update of '0xa4c138…d282'
+[2026-08-15 09:25:10] zh:controller:ota: OTA update of '<redacted-device>'
   estimated at 1008 seconds (4032 chunks, 4 per second)
 ```
 
@@ -161,7 +161,8 @@ current info-level log does not resolve.
    for a *sustained* 1.9 s/block run — but this is the only way to rule it out
    from the firmware side.
 3. **Coordinator / channel contention.** The coordinator is a zstack adapter
-   on `tcp://<internal-ip>:6638` sharing channel 25 with 45 other devices.
+   on `tcp://<internal-ip>:6638` sharing channel 25 with other deployed
+   devices.
    The OTA is only ~2.6 frames/s average, but bursts are ~8 frames/s; shared
    airtime could inject variable latency without ever aborting the transfer.
 

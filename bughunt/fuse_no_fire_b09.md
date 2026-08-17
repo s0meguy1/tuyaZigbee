@@ -1,5 +1,11 @@
 # fuse_no_fire_b09 — build-09 liveness fuse did not fire on its first real-hardware test
 
+> ## Superseded certainty notice (2026-08-17)
+> The liveness fuse's non-fire cause is unresolved. The build-10 one-shot
+> re-arm change and its hardware-timer behavior are not silicon-verified;
+> passing host tests cannot model the timer, IRQ, or stack conditions. Do not
+> treat the causal verdict below as established.
+
 **Scope:** host-side analysis only. No device action, no flashing, no radio/MQTT/docker,
 no commit, no git mutation. One new file (this one).
 **Branch:** `moes-ts0505b`; build 09 = HEAD `2f3636a` + public-moes, image

@@ -333,7 +333,7 @@ is exactly what build 04 did at 10:21:53.
   keeps the existing announce logic for update OTAs.
 
 **Why prefer this first:** it touches no firmware, cannot affect the fleet,
-and can be deployed on the z2m host without touching the 45 healthy lights.
+and can be deployed on the z2m host without touching healthy deployed lights.
 
 ### 4.3 Firmware: a stronger stable-clock signal (fits rescue mode, optional)
 

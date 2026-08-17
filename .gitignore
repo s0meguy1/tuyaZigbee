@@ -59,3 +59,16 @@ dkms.conf
 
 # host test binary
 tools/rescue_hosttest/test_rescue
+
+# Local MOES bench records and captures. Existing tracked history is not hidden
+# by these rules; sanitize it explicitly before publishing.
+HANDOVER*.md
+AI_*.md
+tools/OTA_STALL_PLAYBOOK.md
+field-artifacts/private*/
+field-artifacts/*capture*/
+field-artifacts/*.log
+field-artifacts/*.bin
+# Do not add full local EUI-64s to artifact names. The 16 character pattern is
+# deliberately narrow so public, non-identity firmware names stay trackable.
+field-artifacts/*0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]*.zigbee

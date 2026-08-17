@@ -2,7 +2,7 @@
 
 **Workstream:** L1, the colour-temperature change.
 **Audited image:** build 04, commit `b485043` (contains `5d932a6`), the exact
-tree served to `0xa4c138…d282` today. HEAD (`315f78e`) has the colour
+tree served to `<redacted-device>` today. HEAD (`315f78e`) has the colour
 change reverted by `5274a1f` / `a72a2ae` (build 05), so every line reference
 below is against **`git show b485043:light/zcl_colorCtrlCb.c`**, not the
 working tree. Line numbers for `light/tuyaLightCtrl.c` are identical in HEAD

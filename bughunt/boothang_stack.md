@@ -1,5 +1,11 @@
 # boothang_stack — 18:02 boot hang is a NEW APS/NWK link-status wedge, and s_failCnt=0 is moes_rescueClear(), not "the check never ran"
 
+> ## Superseded certainty notice (2026-08-17)
+> The flasher did not record a halted PC/SP. This document's stack reconstruction
+> is therefore inference, not proof of a new APS/NWK wedge site. The 17:41
+> capture also reset before SRAM acquisition; later preserve-state reads only
+> show post-reset state. See `VERIFICATION_STATUS.md` for the current boundary.
+
 **Branch:** `moes-ts0505b`, running image = BUILD 06 (`6464-0395-11063003`, stripped payload 201956 B).
 **Evidence:** `dump/bench_2026-08-16_boothang/sram_pass1.bin` (65536 B @ 0x840000), `sram_pass2.bin`,
 build-06 raw disassembly (`tc32-elf-objdump -b binary --adjust-vma=0x8000`), build-08 ELF symbols

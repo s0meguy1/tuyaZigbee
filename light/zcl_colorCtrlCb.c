@@ -53,7 +53,7 @@
  * simply was not compiled. The light advertised HA_DEV_EXTENDED_COLOR_LIGHT,
  * published colorCapabilities with the colour-temperature bit and exposed
  * colorTemperatureMireds, and then answered every colour-temperature command
- * with UNSUP_CLUSTER_COMMAND. On 46 CCT downlights that is the whole point of
+ * with UNSUP_CLUSTER_COMMAND. On deployed CCT downlights that is the whole point of
  * the fixture.
  *
  * Splitting each '#elif' into '#endif' + '#if' compiles both halves; single-

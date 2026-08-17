@@ -18,7 +18,7 @@
  * installs work (MOES_EDITING_GUIDE S1.3: "Never write that region"). If the
  * image they leave at 0x40000 does not boot, nothing does: the bootloader is
  * gone, the 0x8000 slot is gone, and there is no working wired write path on
- * this silicon. That is 46 ladders, not "one bad update".
+ * this silicon. That can strand the deployed fleet, not "one bad update".
  *
  * They were previously compiled unconditionally - moes_otaBankInstall() only
  * needed MOES_TS0505B && BOOT_LOADER_MODE, which is exactly our build - so

@@ -97,7 +97,7 @@ should stop here.
 Then soak the *identical image* that will go to the ceiling, for at least
 2 hours, watching announces the whole time.
 
-Bench unit #2 is the light pulled from the ceiling on 2026-08-14. It needs a
+Use a dedicated, easy-to-reach bench fixture. It needs a
 wired flash to bring back, which is why the TB-03F matters
 (`FALLBACK_DESIGN.md` §8).
 
@@ -219,7 +219,7 @@ Choose a light that is:
 * **easy to reach.** Assume you will have to take it down. Pick the one over a
   landing, not the one over the stairwell.
 * **on a circuit you can isolate at the breaker**, so you can cut power to it
-  without cutting the other 45.
+  without cutting power to other deployed fixtures.
 * **not load-bearing for the household** — not the only light in a windowless
   room.
 * **healthy right now**: `linkquality` above ~120 and responding to on/off
@@ -252,7 +252,7 @@ mosquitto_pub -t zigbee2mqtt/bridge/request/device/ota_update/update \
 ```
 
 The per-device `url` form is deliberate: it targets exactly one device and
-never publishes an index that the other 45 could match. **Never** use the
+never publishes an index that other deployed fixtures could match. **Never** use the
 fleet-wide `ota_update/check` form during a test.
 
 Then watch progress:
@@ -286,7 +286,7 @@ Apply the table at the top of this document. Decide within 2 minutes:
 1. **Cut power to that fixture at the breaker.** A light that is not powered is
    not looping and not burning flash. It also stops z2m retrying anything.
 2. **Do not touch another light.** Not one. The bug is in the image, and the
-   image is the same for all 46.
+   image is the same for the deployed fleet.
 3. Record: how many announces, over what interval, and whether it responded to
    anything in between. That cadence is the entire diagnosis.
 4. Post-mortem before the next attempt. `POSTMORTEM_2026-08-14.md` is the
@@ -383,7 +383,8 @@ occasionally, which at ~30 minutes per OTA is still a real risk.
 * One light at a time. `rollout.py --confirm-each`, paired with the watcher.
 * Never the broadcast/index form.
 * Stop on the first failure (`--max-failures 1`, which is the default).
-* Do the easy-to-reach fixtures first, in case the answer changes at light #5.
+* Do the easy-to-reach fixtures first, in case the answer changes after the
+  first few deployments.
 * Rooms with a single light last.
 
 ---

@@ -1,7 +1,7 @@
 # liveness_no_fire — why build 07's wedge fuse did not fire on the bench unit
 
 **Scope:** paper analysis only. No code changed, nothing flashed, no radio/MQTT/docker action.
-**Device:** bench unit IEEE `0xa4c138…eccd`, build 07 (HEAD `87a4e2d`). OTA finished
+**Device:** bench unit `<redacted-device>`, build 07 (HEAD `87a4e2d`). OTA finished
 14:29 UTC, probe answered 14:33:46 UTC, silent by 14:37 UTC, zero observable resets/rejoins
 for 25+ min. Host tests 22/22 (`tools/rescue_hosttest`, `make check`).
 **Verified against:** `light/moes_liveness.{c,h}`, `light/moes_rescue.{c,h}`,

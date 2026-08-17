@@ -348,7 +348,7 @@ SWire writes broken on this silicon, the bootloader's UART path unanswered, no
 TB-03F in hand. **Every light that took that update, at once.**
 
 Rescue mode's worst case is "one light needs a ladder". This one's worst case
-is 46.
+is the whole deployed fleet.
 
 ### 6.2 The prerequisite is bigger than "put `main()` in `.ram_code`"
 

@@ -82,12 +82,12 @@ bool moes_flashGetIeee(u8 *ieee){
 		}else if(c >= 'a' && c <= 'f'){
 			nib = c - 'a' + 10;
 		}else if(c >= 'A' && c <= 'F'){
-			/* The one unit we have dumped stores this lowercase, but nothing
-			 * guarantees the other 45 do. An uppercase digit used to fail the
+			/* The sampled unit stores this lowercase, but nothing
+			 * guarantees the rest of the deployed fleet does. An uppercase digit used to fail the
 			 * parse, silently fall through to the (invalid on this board)
 			 * binary block at 0x0FF000, and give the light a different IEEE -
 			 * i.e. a brand new device in zigbee2mqtt with dead history. Not a
-			 * brick, but not something to discover across 46 fixtures. */
+			 * brick, but not something to discover across deployed fixtures. */
 			nib = c - 'A' + 10;
 		}else{
 			return FALSE;

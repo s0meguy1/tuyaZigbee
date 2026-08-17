@@ -1,7 +1,14 @@
-# HANG_FINDINGS — why build 04 bricked fixture #3, and what the dump must decide
+# HANG_FINDINGS — why build 04 bricked a test fixture, and what the dump must decide
+
+> ## Superseded conclusion notice (2026-08-17)
+> The old MSPI/NV root-cause chain below is refuted. Multiple devices were
+> affected; the precise incident inventory is local-only. The current bench
+> identity/build is not wired-confirmed.
+> Hardware evidence establishes wedges, not their root cause; see
+> `bughunt/VERIFICATION_STATUS.md` for the current fact/inference boundary.
 
 **Date:** 2026-08-15
-**Incident:** `0xa4c138…d282`, build 04 (commit `b485043`, contains the
+**Incident:** `<redacted-device>`, build 04 (commit `b485043`, contains the
 colour-temperature change `5d932a6`), flashed OTA at 09:25, joined and passed a
 full z2m configure pass at 10:21:53, then hung between 10:22 and 10:23. Radio
 dead (`MAC_NO_ACK` continuous), PWM latched steady full **orange**, no reboots,
@@ -241,7 +248,7 @@ Ground truth procedure: `PI_SWIRE_SETUP.md`, `dump/TLSR825xComFlasher.working.py
 1. **SRAM — the prize.** Stack at the moment of the hang contains return
    addresses. Map them with the ELF from the **exact** build: `git checkout
    b485043 && rebuild`, then addr2line. The exact flashed bytes are preserved in
-   `field-artifacts/1141-d3a3-ffffffff-BUILD04-FLASHED-TO-0xa4c138…d282.zigbee`
+   `field-artifacts/1141-d3a3-ffffffff-BUILD04-FIELD.zigbee`
    — a rebuild is *not* byte-identical (`build_time_str` is baked in), so
    prefer the field artifact for byte comparisons and the rebuild only for
    symbol mapping.

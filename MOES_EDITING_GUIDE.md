@@ -1,11 +1,11 @@
-# Editing this firmware without bricking 46 ceiling lights
+# Editing this firmware without bricking deployed ceiling fixtures
 
 Read this before changing anything under `light/`, `device_config/`,
 `common/`, or the vendored SDK in `build/tl_zigbee_sdk/`.
 
-You are editing firmware for **46 mains-wired downlights installed in
-ceilings**. They are updated **only** over the air. There is no working
-wired recovery: SWire writes are broken on this silicon (§6), so a light
+You are editing firmware for **mains-wired deployed downlights installed in
+ceilings**. They are updated **only** over the air. There is no validated
+wired recovery: observed SWire writes corrupt data on this setup (§6), so a light
 that stops accepting OTA has to be physically removed from the ceiling and
 opened up. Assume every mistake is a ladder.
 
@@ -118,7 +118,7 @@ keypair NV module at `0xF4000–0xFC000`, directly **on top of**:
 
 Storing link keys — which happens the first time the light joins a network —
 would erase it. The light loses its MAC address permanently. You cannot
-restore it: it was never backed up for 45 of the 46 units.
+restore it: it was never backed up for most deployed units.
 
 **If you change `NV_BASE_ADDRESS`, or the flash-capacity macros, or
 `BOOT_LOADER_MODE`, recompute the NV span by hand and prove it ends at or
@@ -184,14 +184,14 @@ The radio's IEEE does **not** come from the conventional Telink location.
 
 * `0x0FF000` — the usual Telink MAC block. On these boards it holds a value
   that matches no valid format. **It is not the live address.**
-* `0x0FB000 + 0x58` — an ASCII EUI-64, e.g. `a4c138…eccd`. **This is
+* `0x0FB000 + 0x58` — an ASCII EUI-64, e.g. `<redacted-device>`. **This is
   what the radio uses.** Proven: a converted light joined with exactly this
   value.
 
 `build/tl_zigbee_sdk/zigbee/mac/mac_pib.c` is patched (guarded by
 `MOES_TS0505B`) to read it via `moes_flashGetIeee()`. **If you re-download
 or update the vendored SDK, this patch is lost**, every light gets a
-different randomly-derived MAC, and all 46 appear as brand-new devices in
+different randomly-derived MAC, and deployed fixtures appear as brand-new devices in
 zigbee2mqtt with dead history and broken automations.
 
 Vendored SDK patches that must survive an SDK update:
@@ -347,18 +347,18 @@ The only irreversible moment is a *complete, CRC-valid* image booting.
 
 ## 6. Why there is no wired safety net
 
-SWire **reads** work perfectly (`SWS_DIV=110`, `-b 460800`) and are the way
-to back up a unit. SWire **writes are fundamentally broken** on this part:
-byte values `0x80–0xBF` corrupt deterministically, in both flash and SRAM,
-independent of divider, chunk size and cell encoding. A UART-framed `'1'`
-cell is 8/10 bits low, leaving a 2-bit gap that the chip's decoder swallows,
-so a `'0'` following `'1'`s decodes as `'1'`. This is why pvvx abandoned
-COM-port SWire writing. Do not spend a day rediscovering it.
+SWire reads have an artifact model and must be repeated and merged before an
+exact backup is trusted. On the tested setup, SWire writes showed deterministic
+corruption in flash and SRAM across attempted divider/chunk/cell variations.
+That is an observed failure with **no validated write path**, not a claim that
+writes are fundamentally impossible on all hardware. Do not use it for a
+recovery write.
 
-The stock bootloader also speaks a UART flashing protocol on module pins
-15/16 (115200, `0x55`/`0xAA` framing, crc8) — implemented in
-`uart_flash/uart_flash.py` — but the module never answered on those pins.
-Unresolved.
+The tested stock bootloader was silent on module UART pins 15/16. Static
+evidence (`UART_ENABLE=0` and absent protocol constants in the preserved
+bootloader region) strongly supports UART OTA being compiled out or unavailable,
+but does not prove it. The local UART helper is probe-only: it must not send OTA
+START or attempt a transfer.
 
 **So: OTA is the only way in, and keeping OTA working is the highest
 priority in this codebase.** Everything in §1 exists to protect it.

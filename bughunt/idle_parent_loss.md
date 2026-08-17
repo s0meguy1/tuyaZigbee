@@ -1,5 +1,10 @@
 # idle_parent_loss — why build 06 declares its parent lost ~70–95 s after the last inbound traffic
 
+> ## Superseded certainty notice (2026-08-17)
+> Parent loss remains a theory. The observed wedge has no exact halted PC/SP,
+> and this analysis does not prove that its inferred neighbor-aging sequence
+> reaches the claimed rejoin/scan transition. Use it as a lead only.
+
 **Branch:** `moes-ts0505b`. Analysis is against the build-07 ELF `build/light/light_TS0505B`
 (symbolized, not stripped; the prebuilt `libzb_router.a` nwk code is read via `tc32-elf-objdump`),
 and the build-06 SRAM captures `dump/bench_2026-08-15/hang_capture/{sram_1.bin,sram_2.bin}`.
@@ -253,14 +258,14 @@ These would decide the open questions; none require touching the device.
    `age` can never be reset when idle and the wedge is fully explained. If it *does* send it every
    ~15 s, then the defect is on the device's RX/match side and needs the length/entry-count check in
    `tl_zbNwkLinkStatusCmdHandler` (entryCnt×3+2) examined against the coordinator's actual payload.
-2. **Timeline around the death window** for the bench unit (IEEE `a4c138…eccd`): last
+2. **Timeline around the death window** for the bench unit (`<redacted-device>`): last
    coordinator→device frame time, then the first rejoin/beacon-request burst. Confirm the "~70–95 s
    after last inbound" figure precisely and correlate it with 3×15 s + rejoin backoff.
 3. **What the last inbound frames were** before silence (link-status vs application data). If the
    only inbound frames that reset the death clock are application frames (OTA/ZCL), that confirms the
    data-refreshes-lqi path; if link-status is also present and still the device dies, the RX/match
    defect is the lead.
-4. **Other 45–46 mains devices**: do they also go quiet ~70–95 s after idle, or only the bench unit?
+4. **Other deployed mains fixtures**: do they also go quiet ~70–95 s after idle, or only the bench unit?
    Fleet-wide incidence tells us whether this is a coordinator behaviour (all routers affected) or a
    per-device RX quirk.
 
@@ -281,9 +286,9 @@ Read a cheap coordinator attribute (e.g. Basic `ZCLVersion`, or Time `Time`) uni
 `tl_zbMacMcpsDataIndicationHandler` → `nwk_neTblGetByShortAddr` → LQI-refresh path verified in §1.3.
 - **Anti-wedge effect:** keeps the parent entry's `lqi` alive → parent never looks stale → no
   parent-lost → the rejoin-scan wedge class never starts. Expected effect: high.
-- **Airtime:** one unicast read + MAC ACK + response + MAC ACK ≈ 4 frames per keepalive. 46 devices
-  at 60 s = ~184 frames/min ≈ 3 frames/s. Negligible; roughly doubles the device's existing
-  15-s link-status broadcast background.
+- **Airtime:** one unicast read + MAC ACK + response + MAC ACK ≈ 4 frames per keepalive. At a
+  60 s cadence, assess aggregate fleet airtime against the actual deployment; it is roughly in
+  addition to each device's existing 15-s link-status broadcast background.
 - **Interaction with `moes_liveness.c`:** a ZCL read goes through APS/ZCL, **not** BDB, so it does
   **not** call `moes_livenessStackActivity()` and cannot directly hold the 60 s fuse open. While the
   keepalive works, the device stays `joined`, so `moes_livenessSampleCb` keeps `s_silence = 0` and the

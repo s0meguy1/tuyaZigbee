@@ -1,8 +1,22 @@
 # tuyaZigbee
 [![Build](https://github.com/doctor64/tuyaZigbee/actions/workflows/build.yml/badge.svg)](https://github.com/doctor64/tuyaZigbee/actions/workflows/build.yml)
 
+> **MOES firmware work in progress — do not flash it yet.** This branch contains
+> the replacement firmware, but the radio-silence failure is not fixed and the
+> current recovery/update path is not proven on hardware. Work on a safe fix is
+> still ongoing.
+
 **ATTENTION!**
 Current version of firmware have a critical bug, making impossible next updates over OTA. If you don't have hardware programmer, do not install updated firmware until bug is fixed.
+
+## MOES experimental branch warning
+
+The `moes-ts0505b` branch is experimental research, not a deployable firmware
+release. Build 12 is not silicon-tested, there is no working wedge fix, and an
+update from one custom build to another is unproven. Do not deploy it without a
+recoverable hardware programmer and a tested backup/restore procedure. The
+public-safe evidence matrix and corrected status are in
+[`bughunt/VERIFICATION_STATUS.md`](bughunt/VERIFICATION_STATUS.md).
 
 This project intended to replace firmwares in TuYa devices based on Telink TLSR82XX chips
 ## Supported devices

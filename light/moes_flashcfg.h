@@ -28,7 +28,7 @@ extern "C" {
 #define MOES_FLASH_CFG_ADDR            0x0F8000
 #define MOES_FLASH_CFG_MAGIC           {0xEF, 0xFE, 0xED, 0xFE}
 #define MOES_FLASH_TUYA_ID_ADDR        0x0FB000
-#define MOES_FLASH_EUI_ASCII_OFF       0x58    /* "a4c138…eccd" */
+#define MOES_FLASH_EUI_ASCII_OFF       0x58    /* "<redacted-device>" */
 #define MOES_FLASH_EUI_ASCII_LEN       16
 
 typedef struct {

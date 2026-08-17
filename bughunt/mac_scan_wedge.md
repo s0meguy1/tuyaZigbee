@@ -1,5 +1,11 @@
 # mac_scan_wedge — build 06 bench light goes silent ~70–95 s after a successful join
 
+> ## Superseded certainty notice (2026-08-17)
+> This report does **not** establish a deterministic scan/call chain. It infers
+> one from SRAM and stale values without an exact halted PC/SP; therefore its
+> wedge-site verdict is a hypothesis, not a proven root cause. Read
+> `VERIFICATION_STATUS.md` before using this analysis operationally.
+
 **Branch:** `moes-ts0505b`, build 06 (`da0921b` + `b06109c`), `MODULE_WATCHDOG_ENABLE 1` at 600 ms.
 **Evidence:** two SWire SRAM captures 3 min apart (`dump/bench_2026-08-15/hang_capture/sram_1.bin`, `sram_2.bin`),
 plus `nv.bin`, `wd_regs.bin`, `rst_regs.bin`. Read-only analysis; nothing committed to firmware.
