@@ -53,7 +53,23 @@ set(TOOLCHAIN_BIN_DIR ${TOOLCHAIN_PREFIX}/bin)
 set(TOOLCHAIN_INC_DIR ${TOOLCHAIN_PREFIX}/include)
 set(TOOLCHAIN_LIB_DIR ${TOOLCHAIN_PREFIX}/lib)
 
+function(moes_append_artifact_expectations)
+    cmake_parse_arguments(MOES_ARTIFACT ""
+        "EXPECTED_MANUFACTURER;EXPECTED_IMAGE_TYPE;EXPECTED_FILE_VERSION;EXPECTED_SW_BUILD_ID;OUTER_EXPECTED_MANUFACTURER;OUTER_EXPECTED_IMAGE_TYPE;OUTER_EXPECTED_FILE_VERSION"
+        "" ${ARGN})
+    set(MOES_VERIFY_ARGS "" PARENT_SCOPE)
+    foreach(MOES_FIELD EXPECTED_MANUFACTURER EXPECTED_IMAGE_TYPE EXPECTED_FILE_VERSION EXPECTED_SW_BUILD_ID OUTER_EXPECTED_MANUFACTURER OUTER_EXPECTED_IMAGE_TYPE OUTER_EXPECTED_FILE_VERSION)
+        if(NOT "${MOES_ARTIFACT_${MOES_FIELD}}" STREQUAL "")
+            string(TOLOWER "${MOES_FIELD}" MOES_OPTION)
+            string(REPLACE "_" "-" MOES_OPTION "${MOES_OPTION}")
+            list(APPEND MOES_VERIFY_ARGS "--${MOES_OPTION}" "${MOES_ARTIFACT_${MOES_FIELD}}")
+        endif()
+    endforeach()
+    set(MOES_VERIFY_ARGS "${MOES_VERIFY_ARGS}" PARENT_SCOPE)
+endfunction()
+
 function(add_bin_target TARGET TOOLS_PATH)
+    moes_append_artifact_expectations(${ARGN})
     if(EXECUTABLE_OUTPUT_PATH)
       set(FILENAME "${EXECUTABLE_OUTPUT_PATH}/${TARGET}")
     else()
@@ -65,31 +81,54 @@ function(add_bin_target TARGET TOOLS_PATH)
         COMMAND ${TOOLCHAIN_BIN_DIR}/tc32-elf-size -t ${FILENAME}
         COMMAND ${CMAKE_OBJCOPY} -Obinary ${FILENAME} ${FILENAME}.bin
         COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/tl_check_fw.py ${FILENAME}.bin
+        COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/verify_artifact.py --raw ${FILENAME}.bin ${MOES_VERIFY_ARGS}
     )
 endfunction()
 
 function(add_ota_target TARGET TOOLS_PATH)
+    moes_append_artifact_expectations(${ARGN})
     if(EXECUTABLE_OUTPUT_PATH)
       set(FILENAME "${EXECUTABLE_OUTPUT_PATH}/${TARGET}")
     else()
       set(FILENAME "${TARGET}")
     endif()
-    add_custom_target("${TARGET}.zigbee" ALL
-        DEPENDS ${TARGET}.bin
-        COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/make_ota.py ${FILENAME}.bin
-    )
+    if(MOES_VERIFY_ARGS)
+        # Only the TS0505B calls this path. Keep legacy targets' established
+        # versioned output filename unchanged.
+        set(OTA_FILENAME "${FILENAME}.zigbee")
+        add_custom_target("${TARGET}.zigbee" ALL
+            DEPENDS ${TARGET}.bin
+            COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/make_ota.py -o ${OTA_FILENAME} ${FILENAME}.bin
+            COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/verify_artifact.py --raw ${FILENAME}.bin --zigbee ${OTA_FILENAME} ${MOES_VERIFY_ARGS}
+        )
+    else()
+        add_custom_target("${TARGET}.zigbee" ALL
+            DEPENDS ${TARGET}.bin
+            COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/make_ota.py ${FILENAME}.bin
+        )
+    endif()
 endfunction()
 
 function(add_tuya_ota_target TARGET TOOLS_PATH CODE TYPE VERSION)
+    moes_append_artifact_expectations(${ARGN})
     if(EXECUTABLE_OUTPUT_PATH)
       set(FILENAME "${EXECUTABLE_OUTPUT_PATH}/${TARGET}")
     else()
       set(FILENAME "${TARGET}")
     endif()
-    add_custom_target("${TARGET}.tuya.zigbee" ALL
-        DEPENDS ${TARGET}.bin
-        COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/make_ota.py -c ${CODE} -t ${TYPE} -v ${VERSION} ${FILENAME}.bin
-    )
+    if(MOES_VERIFY_ARGS)
+        set(OTA_FILENAME "${FILENAME}.tuya.zigbee")
+        add_custom_target("${TARGET}.tuya.zigbee" ALL
+            DEPENDS ${TARGET}.bin
+            COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/make_ota.py -o ${OTA_FILENAME} -c ${CODE} -t ${TYPE} -v ${VERSION} ${FILENAME}.bin
+            COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/verify_artifact.py --raw ${FILENAME}.bin --zigbee ${OTA_FILENAME} ${MOES_VERIFY_ARGS} --outer-expected-manufacturer ${CODE} --outer-expected-image-type ${TYPE} --outer-expected-file-version ${VERSION}
+        )
+    else()
+        add_custom_target("${TARGET}.tuya.zigbee" ALL
+            DEPENDS ${TARGET}.bin
+            COMMAND ${Python3_EXECUTABLE} ${TOOLS_PATH}/make_ota.py -c ${CODE} -t ${TYPE} -v ${VERSION} ${FILENAME}.bin
+        )
+    endif()
 endfunction()
 
 function(print_size_of_targets TARGET)

@@ -1,11 +1,13 @@
 # build dir
 build/*
+build-bench/
 
 #cache dir
 .cache/*
 
 # Prerequisites
 *.d
+__pycache__/
 
 # Object files
 *.o
@@ -59,6 +61,7 @@ dkms.conf
 
 # host test binary
 tools/rescue_hosttest/test_rescue
+tools/bench_selftest_hosttest/test_bench_selftest
 
 # Local MOES bench records and captures. Existing tracked history is not hidden
 # by these rules; sanitize it explicitly before publishing.

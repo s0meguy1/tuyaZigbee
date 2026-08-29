@@ -19,9 +19,9 @@
 moes_cfg_t g_moesCfg;
 
 /* ------------------------------------------------------------------ */
-/* ZT3L module pin -> TLSR8258 GPIO/PWM. The five LED channels are
- * cross-confirmed by doctor64's traced TS050xB strip-controller schematic
- * and the Tuya JSON of this very board (r_pin:4 -> PB4 etc.). */
+/* Tuya JSON selector -> TLSR8258 GPIO/PWM. These selector values are not
+ * physical ZT3L module pad numbers; see light_ts0505b.h for the actual pad
+ * mapping. The normal build currently uses compiled GPIO fallbacks. */
 static const moes_pinmap_t moes_pinTable[] = {
 	{ 4,  GPIO_PB4, 4, AS_PWM4 },
 	{ 5,  GPIO_PB5, 5, AS_PWM5 },
@@ -30,9 +30,9 @@ static const moes_pinmap_t moes_pinTable[] = {
 	{13,  GPIO_PD2, 3, AS_PWM3 },
 };
 
-bool moes_pinmapLookup(u8 modulePin, moes_pinmap_t *out){
+bool moes_pinmapLookup(u8 jsonPin, moes_pinmap_t *out){
 	for(u8 i = 0; i < sizeof(moes_pinTable)/sizeof(moes_pinTable[0]); i++){
-		if(moes_pinTable[i].pin == modulePin){
+		if(moes_pinTable[i].pin == jsonPin){
 			*out = moes_pinTable[i];
 			return TRUE;
 		}

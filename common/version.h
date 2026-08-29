@@ -12,7 +12,14 @@
 
 
 #define APP_RELEASE                         0x11 //app release 1.1 (Moes TS0505B custom)
-#define APP_BUILD                           0x0C //app build 12 (build-11 content, version bumped for the 11->12 ours->ours install proof hop)
+#if defined(MOES_APP_BUILD_OVERRIDE)
+  #if (MOES_APP_BUILD_OVERRIDE < 0) || (MOES_APP_BUILD_OVERRIDE > 0xff)
+    #error MOES_APP_BUILD_OVERRIDE must be in range 0..255
+  #endif
+  #define APP_BUILD                         MOES_APP_BUILD_OVERRIDE
+#else
+  #define APP_BUILD                         0x0C //default: Build 12
+#endif
 #define STACK_RELEASE                       0x30 //stack release 3.0
 #define STACK_BUILD                         0x03 //stack build 03 - 3.6.8.6
 
@@ -27,7 +34,15 @@
 #endif
 
 #ifndef ZCL_BASIC_SW_BUILD_ID //max 16 chars
-	#define ZCL_BASIC_SW_BUILD_ID       {8,'v',(APP_RELEASE >> 4) + 0x30,'.',APP_BUILD + 0x30,'s',(STACK_RELEASE >> 4) + 0x30,'.',STACK_BUILD + 0x30}
+  /* A ZCL character string begins with its payload length. APP_BUILD is a
+   * byte, not a single BCD digit: Build 12 must be v1.12s3.3, not v1.<s3.3. */
+  #if (APP_BUILD < 10)
+    #define ZCL_BASIC_SW_BUILD_ID     {8,'v',(APP_RELEASE >> 4) + 0x30,'.',APP_BUILD + 0x30,'s',(STACK_RELEASE >> 4) + 0x30,'.',STACK_BUILD + 0x30}
+  #elif (APP_BUILD < 100)
+    #define ZCL_BASIC_SW_BUILD_ID     {9,'v',(APP_RELEASE >> 4) + 0x30,'.',(APP_BUILD / 10) + 0x30,(APP_BUILD % 10) + 0x30,'s',(STACK_RELEASE >> 4) + 0x30,'.',STACK_BUILD + 0x30}
+  #else
+    #define ZCL_BASIC_SW_BUILD_ID     {10,'v',(APP_RELEASE >> 4) + 0x30,'.',(APP_BUILD / 100) + 0x30,((APP_BUILD / 10) % 10) + 0x30,(APP_BUILD % 10) + 0x30,'s',(STACK_RELEASE >> 4) + 0x30,'.',STACK_BUILD + 0x30}
+  #endif
 #endif
 
 
@@ -46,4 +61,3 @@
 //OTA image type, define device type
 //defined in device config
 //#define IMAGE_TYPE                          ((CHIP_TYPE << 8) | IMAGE_TYPE_SWITCH_ZBWS01A) //0x03B1
-

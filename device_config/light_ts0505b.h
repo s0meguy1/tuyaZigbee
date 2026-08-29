@@ -8,18 +8,17 @@
  * at flash 0x0F8000 - same data as the TS0501B strip-controller family,
  * all five channels populated):
  *
- *   channel      ZT3L module pin   TLSR8258 GPIO   PWM channel
- *   red          4                 PB4             PWM4
- *   green        11                PC3             PWM1
- *   blue         13                PD2             PWM3
- *   cool white   5                 PB5             PWM5
- *   warm white   10                PC2             PWM0
+ *   channel      ZT3L physical pad  TLSR8258 GPIO   PWM channel
+ *   red          13 / B4            PB4             PWM4
+ *   green        6 / C3             PC3             PWM1
+ *   blue         5 / D2             PD2             PWM3
+ *   cool white   14 / B5            PB5             PWM5
+ *   warm white   7 / C2             PC2             PWM0
  *   all channels active-high, pwmhz 4000
  *
- * At boot the firmware re-reads that JSON (see moes_flashcfg.c) so pin
- * assignment, active level, PWM frequency, white-balance trim and the
- * factory-reset power-cycle count stay data-driven, as in stock. The
- * values below are the compiled fallback if the block is missing/corrupt.
+ * The stock JSON's r_pin/g_pin/... values (4, 11, 13, 5, 10) are Tuya
+ * configuration selectors, not physical ZT3L pad numbers. The values below
+ * are compiled wiring; do not use the JSON selectors to wire a carrier.
  *
  * There is no button and no status LED on this board: pairing is the
  * stock 3-power-cycle gesture (factory_reset.c), reporting shows state.

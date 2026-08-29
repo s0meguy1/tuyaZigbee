@@ -1,0 +1,1338 @@
+--- a/tl_zigbee_sdk/apps/common/main.c
++++ b/tl_zigbee_sdk/apps/common/main.c
+@@ -1,88 +1,155 @@
+-/********************************************************************************************************
+- * @file    main.c
+- *
+- * @brief   This is the source file for main
+- *
+- * @author  Zigbee Group
+- * @date    2021
+- *
+- * @par     Copyright (c) 2021, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
+- *			All rights reserved.
+- *
+- *          Licensed under the Apache License, Version 2.0 (the "License");
+- *          you may not use this file except in compliance with the License.
+- *          You may obtain a copy of the License at
+- *
+- *              http://www.apache.org/licenses/LICENSE-2.0
+- *
+- *          Unless required by applicable law or agreed to in writing, software
+- *          distributed under the License is distributed on an "AS IS" BASIS,
+- *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- *          See the License for the specific language governing permissions and
+- *          limitations under the License.
+- *
+- *******************************************************************************************************/
+-
+-#include "zb_common.h"
+-
+-
+-/*
+- * main:
+- * */
+-int main(void){
+-	startup_state_e state = drv_platform_init();
+-
+-	u8 isRetention = (state == SYSTEM_DEEP_RETENTION) ? 1 : 0;
+-
+-	os_init(isRetention);
+-
+-#if 0
+-	extern void moduleTest_start(void);
+-	moduleTest_start();
+-#else
+-
+-	extern void user_init(bool isRetention);
+-	user_init(isRetention);
+-
+-	drv_enable_irq();
+-
+-#if (MODULE_WATCHDOG_ENABLE)
+-	drv_wd_setInterval(600);
+-    drv_wd_start();
+-#endif
+-
+-#if VOLTAGE_DETECT_ENABLE
+-    u32 tick = clock_time();
+-#endif
+-
+-	while(1){
+-#if VOLTAGE_DETECT_ENABLE
+-		if(clock_time_exceed(tick, 200 * 1000)){
+-			voltage_detect(0);
+-			tick = clock_time();
+-		}
+-#endif
+-
+-#if defined(MCU_CORE_B92)
+-		drv_vbusWatchdogClose();
+-#endif
+-
+-    	ev_main();
+-
+-#if (MODULE_WATCHDOG_ENABLE)
+-		drv_wd_clear();
+-#endif
+-
+-		tl_zbTaskProcedure();
+-
+-#if	(MODULE_WATCHDOG_ENABLE)
+-		drv_wd_clear();
+-#endif
+-	}
+-
+-#endif
+-
+-	return 0;
+-}
+-
+-
++/********************************************************************************************************
++ * @file    main.c
++ *
++ * @brief   This is the source file for main
++ *
++ * @author  Zigbee Group
++ * @date    2021
++ *
++ * @par     Copyright (c) 2021, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
++ *			All rights reserved.
++ *
++ *          Licensed under the Apache License, Version 2.0 (the "License");
++ *          you may not use this file except in compliance with the License.
++ *          You may obtain a copy of the License at
++ *
++ *              http://www.apache.org/licenses/LICENSE-2.0
++ *
++ *          Unless required by applicable law or agreed to in writing, software
++ *          distributed under the License is distributed on an "AS IS" BASIS,
++ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *          See the License for the specific language governing permissions and
++ *          limitations under the License.
++ *
++ *******************************************************************************************************/
++
++#include "zb_common.h"
++
++/* MOES PATCH (vendored SDK, 2026): the TS0505B light arrives over the air
++ * and first runs at 0x8000 under the stock Tuya bootloader. Move to the
++ * no-bootloader dual-bank scheme before anything else - RAM code only
++ * (see light/moes_otaScheme.c). Guarded so other targets are unaffected. */
++/* MOES: the no-bootloader dual-bank migration is NOT used in v1 (we keep
++ * the stock Tuya bootloader). Enabling it also requires main() itself to
++ * live in .ram_code, since under a bootloader the image executes at an
++ * offset it was not linked for. */
++#if defined(MOES_NOBOOT_MIGRATION)
++extern void ensure_correct_ota_scheme(void);
++#endif
++
++/*
++ * main:
++ * */
++int main(void){
++#if defined(MOES_NOBOOT_MIGRATION)
++	ensure_correct_ota_scheme();   /* resets if it migrates - never returns then */
++#endif
++
++	startup_state_e state = drv_platform_init();
++
++#if (MODULE_WATCHDOG_ENABLE && MOES_BOOT_WATCHDOG_ENABLE)
++	/* MOES PATCH (vendored SDK, 2026-08-28, build 15): start a long boot
++	 * watchdog after drv_platform_init() returns and BEFORE user_init(). Stock
++	 * order is: user_init() first, then drv_enable_irq() and the 600 ms runtime
++	 * watchdog. The bench rf_setTrxState freeze was observed with brownout/
++	 * silicon confounders, not as firmware proof of that path. This addresses
++	 * equivalent software forward-progress stalls only while Timer2 and its
++	 * clock remain functional; it cannot recover a frozen timer/SRAM domain.
++	 * wd_set_interval_ms() needs the running system clock. Tightened to the
++	 * normal interval only after MOES_BOOT_WATCHDOG_SETTLE_MS of runtime -
++	 * see below and light/app_cfg.h. */
++	drv_wd_setInterval(MOES_BOOT_WATCHDOG_BOOT_MS);
++	drv_wd_start();
++#endif
++
++	u8 isRetention = (state == SYSTEM_DEEP_RETENTION) ? 1 : 0;
++
++#if (MODULE_WATCHDOG_ENABLE && MOES_BOOT_WATCHDOG_ENABLE)
++	/* MOES PATCH (build 16): re-prime the boot window before each init
++	 * phase, so time spent in os_init() cannot eat into user_init()'s
++	 * coverage (and vice versa). */
++	drv_wd_clear();
++#endif
++
++	os_init(isRetention);
++
++#if (MODULE_WATCHDOG_ENABLE && MOES_BOOT_WATCHDOG_ENABLE)
++	drv_wd_clear();
++#endif
++
++#if 0
++	extern void moduleTest_start(void);
++	moduleTest_start();
++#else
++
++	extern void user_init(bool isRetention);
++	user_init(isRetention);
++
++	drv_enable_irq();
++
++#if (MODULE_WATCHDOG_ENABLE)
++	/* MOES PATCH (build 16): do NOT tighten to the 600 ms runtime interval
++	 * here. Build 15 tightened immediately after user_init() returned; on
++	 * the bench the first post-boot cycles (reporting/binding NV
++	 * normalization after a configure pass) then ran under the tight
++	 * window, a mid-sequence reset corrupted NV state, and the resulting
++	 * cascade ended with the firmware programming ~100 KB of bit damage
++	 * over its own application flash (bughunt/build15_runaway_cascade.md).
++	 * Keep the long boot interval for MOES_BOOT_WATCHDOG_SETTLE_MS of
++	 * runtime (see light/app_cfg.h), then tighten inside the loop. With
++	 * MOES_BOOT_WATCHDOG_ENABLE off this is exactly the stock sequence. */
++#if (MOES_BOOT_WATCHDOG_ENABLE)
++	drv_wd_clear();
++	u32 moesWdBootTick = clock_time();
++	u8 moesWdTightened = 0;
++#else
++	drv_wd_clear();
++	drv_wd_setInterval(600);
++    drv_wd_start();
++#endif
++#endif
++
++#if VOLTAGE_DETECT_ENABLE
++    u32 tick = clock_time();
++#endif
++
++	while(1){
++#if VOLTAGE_DETECT_ENABLE
++		if(clock_time_exceed(tick, 200 * 1000)){
++			voltage_detect(0);
++			tick = clock_time();
++		}
++#endif
++
++#if defined(MCU_CORE_B92)
++		drv_vbusWatchdogClose();
++#endif
++
++    	ev_main();
++
++#if (MODULE_WATCHDOG_ENABLE)
++		drv_wd_clear();
++#endif
++
++		tl_zbTaskProcedure();
++
++#if	(MODULE_WATCHDOG_ENABLE)
++		drv_wd_clear();
++#endif
++
++#if (MODULE_WATCHDOG_ENABLE && MOES_BOOT_WATCHDOG_ENABLE)
++		if(!moesWdTightened && clock_time_exceed(moesWdBootTick, MOES_BOOT_WATCHDOG_SETTLE_MS * 1000)){
++			moesWdTightened = 1;
++			drv_wd_clear();
++			drv_wd_setInterval(600);
++			drv_wd_start();
++		}
++#endif
++	}
++
++#endif
++
++	return 0;
++}
++
++
+--- a/tl_zigbee_sdk/platform/chip_8258/spi_i.h
++++ b/tl_zigbee_sdk/platform/chip_8258/spi_i.h
+@@ -32,10 +32,21 @@
+  * @brief     This function servers to set the spi wait.
+  * @param[in] none
+  * @return    none
++ *
++ * Vendored-SDK patch (2026-08-15): bound the busy poll. The stock loop is
++ * unbounded and runs with global IRQs disabled inside every flash operation
++ * (flash.c:108/146); if FLD_MSPI_BUSY sticks, the CPU spins forever and never
++ * reaches the caller's irq_restore(). MSPI_WAIT_MAX_ITER is ~2-5 ms at 48 MHz,
++ * roughly 1000x the longest legitimate per-byte MSPI transaction. On timeout
++ * fall out so the caller restores IRQs: NV torn-write recovery handles a failed
++ * op, and the watchdog reset path catches a true hardware wedge.
+  */
++#define MSPI_WAIT_MAX_ITER		20000u
+ _attribute_ram_code_sec_ static inline void mspi_wait(void){
+-	while(reg_mspi_ctrl & FLD_MSPI_BUSY)
+-		;
++	unsigned int iter = MSPI_WAIT_MAX_ITER;
++	while((reg_mspi_ctrl & FLD_MSPI_BUSY) && iter){
++		--iter;
++	}
+ }
+ 
+ /**
+--- a/tl_zigbee_sdk/proj/drivers/drv_nv.h
++++ b/tl_zigbee_sdk/proj/drivers/drv_nv.h
+@@ -1,439 +1,492 @@
+-/********************************************************************************************************
+- * @file    drv_nv.h
+- *
+- * @brief   This is the header file for drv_nv
+- *
+- * @author  Zigbee Group
+- * @date    2021
+- *
+- * @par     Copyright (c) 2021, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
+- *          All rights reserved.
+- *
+- *          Licensed under the Apache License, Version 2.0 (the "License");
+- *          you may not use this file except in compliance with the License.
+- *          You may obtain a copy of the License at
+- *
+- *              http://www.apache.org/licenses/LICENSE-2.0
+- *
+- *          Unless required by applicable law or agreed to in writing, software
+- *          distributed under the License is distributed on an "AS IS" BASIS,
+- *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- *          See the License for the specific language governing permissions and
+- *          limitations under the License.
+- *
+- *******************************************************************************************************/
+-
+-#pragma once
+-
+-
+-
+-/********************************************************************
+- * @brief	Flash map usage.
+- *
+-* #if !defined(BOOT_LOADER_MODE) || (BOOT_LOADER_MODE == 0)
+- *																					  2M							  4M
+- *                                                                      0x200000  ------------       	0x400000  ------------
+- *	 				512k							  1M				    	 |  MAC_Addr  |      			 |  MAC_Addr  |
+- * 		0x80000  ------------			0x100000  ------------          0x1FF000 |------------|      	0x3FF000 |------------|
+- *	 			|		     |					 |  MAC_Addr  |     	    	 | F_CFG_Info |      			 | F_CFG_Info |
+- *	  		    |  	 NV_2 	 |			 0xFF000 |------------|         0x1FE000 |------------|  	    0x3FE000 |------------|
+- *	 		    |		     |					 | F_CFG_Info |     	   		 |	Reserved  |	       			 |	Reserved  |
+- *		0x7A000 |------------|			 0xFE000 |------------|     	 0xFE000 |------------| 	     0xFE000 |------------|
+- *	 		    | U_Cfg_Info |					 | U_Cfg_Info |     	   		 | U_Cfg_Info |      			 | U_Cfg_Info |
+- * 		0x78000 |------------|			 0xFC000 |------------|     	 0xFC000 |------------|      	 0xFC000 |------------|
+- *		   		| F_CFG_Info |					 |  Reserved  |     	    	 |  Reserved  |      			 |  Reserved  |
+- * 		0x77000 |------------|			 0x96000 |------------|     	 0x96000 |------------|      	 0x96000 |------------|
+- * 		   		|  MAC_Addr  |					 |     NV     |     	    	 |     NV     |      			 |     NV     |
+- * 		0x76000 |------------|			 0x80000 |------------|     	 0x80000 |------------|      	 0x80000 |------------|
+- * 		   		|		     |					 |			  |     	    	 |			  |      			 |			  |
+- * 		   		|  OTA_Image |					 |			  |     	    	 |			  |      			 |			  |
+- * 		   		|		     |					 |	OTA_Image |     	    	 |	OTA_Image |      			 |	OTA_Image |
+- * 		0x40000 |------------|					 |			  |     	    	 |			  |      			 |			  |
+- * 		   		|		     |					 |			  |     	    	 |			  |      			 |			  |
+- * 		   		|  	 NV_1 	 |			 0x40000 |------------|     	 0x40000 |------------|      	 0x40000 |------------|
+- * 		   		|		     |					 |			  |     	    	 |			  |      			 |			  |
+- * 		0x34000 |------------|					 |			  |     	    	 |			  |      			 |			  |
+- * 		   		|		     |					 |  Firmware  |     	    	 |  Firmware  |      			 |  Firmware  |
+- * 		   		|  Firmware  |	208k			 |			  | 256k	    	 |			  | 256k 			 |			  | 256k
+- * 		   		|		     |					 |			  |     	    	 |			  |         		 |			  |
+- * 		0x00000  ------------			 0x00000  ------------      	 0x00000  ------------           0x00000  ------------
+- *
+- *
+- *
+- * #else
+- *																					  2M							  4M
+- *                                                                      0x200000  ------------          0x400000  ------------
+- *	 				512k							  1M						 |  MAC_Addr  |         		 |  MAC_Addr  |
+- * 		0x80000  ------------			0x100000  ------------          0x1FF000 |------------|         0x3FF000 |------------|
+- *	 			|			 |					 |  MAC_Addr  |         		 | F_CFG_Info |         		 | F_CFG_Info |
+- *	 			|  	 NV_2 	 |			 0xFF000 |------------|         0x1FE000 |------------|         0x3FE000 |------------|
+- *	 			|			 |					 | F_CFG_Info |         		 |  Reserved  |         		 |  Reserved  |
+- *	 	0x7A000 |------------|			 0xFE000 |------------|          0xFE000 |------------|          0xFE000 |------------|
+- *	 			| U_Cfg_Info |					 | U_Cfg_Info |         		 | U_Cfg_Info |         		 | U_Cfg_Info |
+- *	 	0x78000 |------------|			 0xFC000 |------------|          0xFC000 |------------|          0xFC000 |------------|
+- *	 			| F_CFG_Info |					 |		      |         		 |		      |         		 |		      |
+- *	 	0x77000 |------------|					 |     NV     |         		 |     NV     |         		 |     NV     |
+- *	 			|  MAC_Addr  |					 |		      |         		 |		      |         		 |		      |
+- *	 	0x76000 |------------|			 0xE6000 |------------|          0xE6000 |------------|          0xE6000 |------------|
+- *	 			|		     |					 |		      |         		 |		      |         		 |		      |
+- *	 			|  	 NV_1	 |					 |		      |         		 |		      |         		 |		      |
+- *	 			|		     |					 |	OTA_Image |         		 |	OTA_Image |         		 |	OTA_Image |
+- *	 	0x6A000 |------------|					 |		      |         		 |		      |         		 |		      |
+- *	 			|		     |					 |		      |         		 |		      |         		 |		      |
+- *	 			|  OTA_Image |			 0x77000 |------------|          0x77000 |------------|          0x77000 |------------|
+- *	 			|		     |					 |		      |         		 |		      |         		 |		      |
+- *	 	0x39000 |------------|					 |		      |         		 |		      |         		 |		      |
+- *	 			|			 |					 |  Firmware  |         		 |  Firmware  |         		 |  Firmware  |
+- *	 			|  Firmware	 |	196k			 |		      | 444k    		 |		      | 444k    		 |		      | 444k
+- *	 			|			 |					 |		      |         		 |		      |         		 |		      |
+- *	 	0x08000 |------------|			 0x08000 |------------|          0x08000 |------------|          0x08000 |------------|
+- *	 			| BootLoader |					 | BootLoader |         		 | BootLoader |         		 | BootLoader |
+- *	 	0x00000  ------------			 0x00000  ------------           0x00000  ------------           0x00000  ------------
+- *
+- * #endif
+- */
+-
+-/* Flash Base Address define */
+-#if defined(MCU_CORE_826x) || defined(MCU_CORE_8258) || defined(MCU_CORE_8278)
+-	#define FLASH_TLNK_FLAG_OFFSET		8
+-#elif defined(MCU_CORE_B91) || defined(MCU_CORE_B92)
+-	#define FLASH_TLNK_FLAG_OFFSET		32
+-#endif
+-
+-
+-
+-/************************************************************************
+- * Flash address of factory setting parameters,
+- * where are stored the MAC ADDRESS and CALIBRATION information.
+- */
+-//512k flash
+-#define FLASH_ADDR_OF_MAC_ADDR_512K		0x76000
+-#define FLASH_ADDR_OF_F_CFG_INFO_512K	0x77000
+-//1M flash
+-#define FLASH_ADDR_OF_MAC_ADDR_1M		0xFF000
+-#define FLASH_ADDR_OF_F_CFG_INFO_1M		0xFE000
+-//2M flash
+-#define FLASH_ADDR_OF_MAC_ADDR_2M		0x1FF000
+-#define FLASH_ADDR_OF_F_CFG_INFO_2M		0x1FE000
+-//4M flash
+-#define FLASH_ADDR_OF_MAC_ADDR_4M		0x3FF000
+-#define FLASH_ADDR_OF_F_CFG_INFO_4M		0x3FE000
+-
+-/************************************************************************/
+-extern u32 g_u32MacFlashAddr;
+-extern u32 g_u32CfgFlashAddr;
+-
+-#define MAC_BASE_ADD					(g_u32MacFlashAddr)
+-#define FACTORY_CFG_BASE_ADD			(g_u32CfgFlashAddr)
+-/************************************************************************/
+-
+-/**************************************************************************************
+- * The following is the detailed factory configure information (F_CFG_Info).
+- */
+-/* 8 bytes for MAC address. */
+-#define CFG_MAC_ADDRESS              	(MAC_BASE_ADD)
+-
+-/* 2 bytes for USB ID. */
+-#define CFG_TELINK_USB_ID				(MAC_BASE_ADD + 0x40)
+-
+-/* 1 byte for frequency offset calibration. */
+-#define CFG_FREQUENCY_OFFSET			(FACTORY_CFG_BASE_ADD)
+-
+-/* 2 bytes for TP GAIN.
+- * 0x77040(or 0xFE040) for BLE TP_GAIN_0, 0x77041(or 0xFE041) for BLE TP_GAIN_1,
+- * 0x77042(or 0xFE042) for zigbee TP_GAIN_0, 0x77043(or 0xFE043) for zigbee TP_GAIN_1. */
+-#define CFG_TP_GAIN                  	(FACTORY_CFG_BASE_ADD + 0x42)
+-
+-/* Not supported for current SDK. */
+-#define CFG_32K_COUNTER_CALIBRATION	 	(FACTORY_CFG_BASE_ADD + 0x80)
+-
+-/* Not supported for current SDK. */
+-#define CFG_ADC_CALIBRATION           	(FACTORY_CFG_BASE_ADD + 0xC0)
+-
+-/* Not supported for current SDK. */
+-#define CFG_24M_CRYSTAL_CALIBRATION     (FACTORY_CFG_BASE_ADD + 0x100)
+-
+-/* Not supported for current SDK. */
+-#define CFG_T_SENSOR_CALIBRATION     	(FACTORY_CFG_BASE_ADD + 0x140)
+-
+-/* UID-based Firmware Encryption data(16 bytes), 0x77180(or 0xFE180) ~ 0x7718F(or 0xFE18F). */
+-#define CFG_FIRMWARE_ENCRYPTION			(FACTORY_CFG_BASE_ADD + 0x180)
+-
+-/* 2 bytes for VDD_F calibration.
+- * 0x771C0(or 0xFF1C0) for DCDC trim,
+- * 0x771C1(or 0xFF1C1) for LDO trim.
+- */
+-#define CFG_VDD_F_CALIBRATION			(FACTORY_CFG_BASE_ADD + 0x1C0)
+-
+-
+-/**************************************************************************************
+- * The following is the detailed user configure information (U_CFG_Info).
+- */
+-/* 16 bytes for pre-install code. */
+-#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
+-#define CFG_PRE_INSTALL_CODE			(0xFD000)
+-#else
+-#define CFG_PRE_INSTALL_CODE			(0x78000)
+-#endif
+-
+-/* 1 byte for factory reset.
+- * If not 0xFF, means the device is doing factory reset(erase NV).
+- * The device will check this byte when powered on, if it is not 0xFF,
+- * it will erase NV first.
+- */
+-#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
+-#define CFG_FACTORY_RST_CNT			  	(0xFC000)
+-#else
+-#define CFG_FACTORY_RST_CNT			  	(0x79000)
+-#endif
+-
+-/**************************************************************************************
+- * Flash address of NV module.
+- */
+-#if !defined(BOOT_LOADER_MODE) || (BOOT_LOADER_MODE == 0)
+-#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
+-	#define NV_BASE_ADDRESS				(0x80000)
+-#else
+-	#define	NV_BASE_ADDRESS				(0x34000)
+-	#define	NV_BASE_ADDRESS2			(0x7A000)
+-#endif
+-#else
+-#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
+-	#define NV_BASE_ADDRESS				(0xE6000)
+-#else
+-	#define	NV_BASE_ADDRESS				(0x6A000)
+-	#define	NV_BASE_ADDRESS2			(0x7A000)
+-#endif
+-#endif
+-
+-
+-/************************************************************************
+- * Flash address of APP firmware.
+- */
+-#define FLASH_ADDR_OF_APP_FW			APP_IMAGE_ADDR
+-
+-
+-/************************************************************************
+- * Flash address of OTA image.
+- */
+-#if !defined(BOOT_LOADER_MODE) || (BOOT_LOADER_MODE == 0)
+-#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
+-	//max size = (0x80000 - 0) / 2 = 256k
+-	#define FLASH_OTA_IMAGE_MAX_SIZE	((NV_BASE_ADDRESS - FLASH_ADDR_OF_APP_FW) / 2)
+-#else
+-	//max size = (0x34000 - 0) = 208k
+-	#define FLASH_OTA_IMAGE_MAX_SIZE	(NV_BASE_ADDRESS - FLASH_ADDR_OF_APP_FW)
+-#endif
+-	//unchangeable address
+-	#define FLASH_ADDR_OF_OTA_IMAGE		(0x40000)
+-#else
+-	//1M   Flash: max size = (0xE6000 - 0x8000) / 2 = 444k
+-	//512k Flash: max size = (0x6A000 - 0x8000) / 2 = 196k
+-	#define FLASH_OTA_IMAGE_MAX_SIZE	((NV_BASE_ADDRESS - FLASH_ADDR_OF_APP_FW) / 2)
+-	//1M   Flash: ota addr = 0x8000 + 444k = 0x77000
+-	//512k Flash: ota addr = 0x8000 + 196k = 0x39000
+-	#define FLASH_ADDR_OF_OTA_IMAGE		(FLASH_ADDR_OF_APP_FW + FLASH_OTA_IMAGE_MAX_SIZE)
+-#endif
+-
+-/******************************************* DUAL_MODE ********************************************************/
+-/* Don't care, will be delete. */
+-#if DUAL_MODE
+-//NOTE: firmware must less then 192K if UDAL_MODE used
+-typedef enum{
+-	TYPE_TLK_MESH  						= 0x000000A3,// don't change, must same with telink mesh SDK
+-	TYPE_SIG_MESH  						= 0x0000003A,// don't change, must same with telink mesh SDK
+-	TYPE_TLK_BLE_SDK 					= 0x000000C3,// don't change, must same with telink mesh SDK
+-	TYPE_TLK_ZIGBEE  					= 0x0000003C,// don't change, must same with telink mesh SDK
+-	TYPE_DUAL_MODE_STANDBY				= 0x00000065,// dual mode state was standby to be selected
+-	TYPE_DUAL_MODE_RECOVER 				= 0x00000056,// don't change, must same with telink mesh SDK, recover for mesh
+-}telink_sdk_type_t;
+-
+-#define CFG_TELINK_SDK_TYPE				(0x73000)
+-#define CFG_TELINK_SIG_MESH_CRC			(0x73040)
+-#define CFG_TELINK_SIG_MESH_CODE_4K		(0x75000)
+-#define CFG_TELINK_DUAL_MODE_ENABLE		(0x76080)
+-#endif	/* DUAL_MODE */
+-/******************************************** END ***********************************************************/
+-
+-
+-
+-
+-#define NV_SECT_INFO_CHECK_BITS			6
+-#define NV_SECT_INFO_CHECK_BITMASK		0x3f
+-#define NV_SECT_INFO_SECTNO_BITS		(8-NV_SECT_INFO_CHECK_BITS)
+-#define NV_SECT_INFO_SECTNO_BITMASK		0x3
+-
+-/* sector info(4Bytes) + index info(8Bytes) + index info(8Bytes) + ... */
+-typedef struct{
+-	u16 usedFlag;
+-	u8  idName;
+-	u8  opSect;    //crcCheckBit(6bits) + opSect(2bits)
+-}nv_sect_info_t;
+-
+-typedef struct{
+-	u32 offset;
+-	u16 size;
+-	u8  itemId;
+-	u8  usedState;
+-#if defined(MCU_CORE_B91) || defined(MCU_CORE_B92)
+-	u8  resv[8];   //PUYA flash only supports re-write 64 times
+-#endif
+-}nv_info_idx_t;
+-
+-/* item:  item_hdr(8Bytes) + payload*/
+-typedef struct{
+-	u32 checkSum;
+-	u16 size;
+-	u8  itemId;
+-	u8  used;
+-}itemHdr_t;
+-
+-typedef struct{
+-	u16 opIndex;
+-	u8 	opSect;
+-}itemIfno_t;
+-
+-//If OTA enabled, the maximum space used for nv module t is 56K, thus the item num cannot over 14
+-/*****************************************************************************************************************************
+- * Store zigbee information in flash.
+- * 		Module ID				|			512K Flash				|			1M Flash				|
+- * -----------------------------|-----------------------------------|-----------------------------------|
+- * NV_MODULE_ZB_INFO			|		0x34000 - 0x36000			|		0x80000 - 0x82000			|
+- * NV_MODULE_ADDRESS_TABLE		|		0x36000 - 0x38000			|		0x82000 - 0x84000			|
+- * NV_MODULE_APS				|		0x38000 - 0x3a000			|		0x84000 - 0x86000			|
+- * NV_MODULE_ZCL				|		0x3a000 - 0x3c000			|		0x86000 - 0x88000			|
+- * NV_MODULE_NWK_FRAME_COUNT	|		0x3c000 - 0x3e000			|		0x88000 - 0x8a000			|
+- * NV_MODULE_OTA				|		0x3e000 - 0x40000			|		0x8a000 - 0x8c000			|
+- * NV_MODULE_APP				|		0x7a000 - 0x7c000			|		0x8c000 - 0x8e000			|
+- * NV_MODULE_KEYPAIR			|		0x7c000 - 0x80000			|		0x8e000 - 0x96000			|
+- * 								|	*16K - can store 127 nodes		|	*32K - can store 302 nodes		|
+- * NV_MAX_MODULS
+- */
+-typedef enum{
+-	NV_MODULE_ZB_INFO 				= 0,      /* mustn't modify it */
+-	NV_MODULE_ADDRESS_TABLE 		= 1,      /* mustn't modify it */
+-    NV_MODULE_APS 					= 2,      /* mustn't modify it */
+-    NV_MODULE_ZCL 					= 3,      /* mustn't modify it */
+-	NV_MODULE_NWK_FRAME_COUNT 		= 4,      /* mustn't modify it */
+-	NV_MODULE_OTA 					= 5,
+-	NV_MODULE_APP 					= 6,
+-	NV_MODULE_KEYPAIR 				= 7,
+-    NV_MAX_MODULS
+-}nv_module_t;
+-
+-typedef enum{
+-	NV_ITEM_ID_INVALID				= 0,/* Item id 0 should not be used. */
+-
+-	NV_ITEM_ZB_INFO 				= 1, /* mustn't modify it */
+-	NV_ITEM_ADDRESS_FOR_NEIGHBOR,        /* mustn't modify it */
+-	NV_ITEM_ADDRESS_FOR_BIND,            /* mustn't modify it */
+-	NV_ITEM_APS_SSIB,                    /* mustn't modify it */
+-	NV_ITEM_APS_GROUP_TABLE,             /* mustn't modify it */
+-	NV_ITEM_APS_BINDING_TABLE,           /* mustn't modify it */
+-
+-	NV_ITEM_NWK_FRAME_COUNT,             /* mustn't modify it */
+-
+-	NV_ITEM_SS_KEY_PAIR,                 /* mustn't modify it */
+-
+-	NV_ITEM_OTA_HDR_SERVERINFO,
+-	NV_ITEM_OTA_CODE,
+-
+-	NV_ITEM_ED_TIMEOUT,
+-
+-	NV_ITEM_ZCL_REPORT 				= 0x20,
+-	NV_ITEM_ZCL_ON_OFF,
+-	NV_ITEM_ZCL_LEVEL,
+-	NV_ITEM_ZCL_COLOR_CTRL,
+-	NV_ITEM_ZCL_SCENE_TABLE,
+-	NV_ITEM_ZCL_GP_PROXY_TABLE,
+-	NV_ITEM_ZCL_GP_SINK_TABLE,
+-	NV_ITEM_ZCL_WWAH_APS_AUTH_INFO,
+-	NV_ITEM_ZCL_WWAH_APS_ACKS_INFO,
+-	NV_ITEM_ZCL_WWAH_USE_TC_CLUSTER_INFO,
+-
+-	NV_ITEM_APP_SIMPLE_DESC,
+-	NV_ITEM_APP_POWER_CNT,
+-	NV_ITEM_APP_GP_TRANS_TABLE,
+-
+-	NV_ITEM_APS_BINDING_TABLE_V2    = 0x80,  /* mustn't modify it */
+-
+-	NV_ITEM_ID_MAX					= 0xFF,/* Item id 0xFF should not be used. */
+-}nv_item_t;
+-
+-typedef enum{
+-	NV_SUCC,
+-    NV_INVALID_MODULS 				= 1,
+-    NV_INVALID_ID ,
+-    NV_ITEM_NOT_FOUND,
+-    NV_NOT_ENOUGH_SAPCE,
+-    NV_ITEM_LEN_NOT_MATCH,
+-    NV_CHECK_SUM_ERROR,
+-    NV_ENABLE_PROTECT_ERROR,
+-    NV_NO_MEDIA,
+-    NV_DATA_CHECK_ERROR,
+-	NV_ITEM_CHECK_ERROR,
+-	NV_MODULE_NOT_FOUND,
+-	NV_MODULE_ERASE_NEED
+-} nv_sts_t;
+-
+-
+-#define FLASH_PAGE_SIZE							256
+-#define	FLASH_SECTOR_SIZE						4096//4K
+-
+-#define NV_SECTOR_VALID							0x5A5A
+-#define NV_SECTOR_VALID_CHECKCRC				0x7A7A
+-#define NV_SECTOR_VALID_READY_CHECKCRC			0xFAFA
+-#define NV_SECTOR_INVALID						0x5050
+-#define NV_SECTOR_IDLE							0xFFFF
+-
+-#define ITEM_FIELD_VALID						0x5A
+-#define ITEM_FIELD_VALID_SINGLE					0x7A
+-#define ITEM_FIELD_INVALID						0x50
+-#define ITEM_FIELD_OPERATION					0xFA
+-#define ITEM_FIELD_IDLE							0xFF
+-
+-#define ITEM_HDR_FIELD_VALID_CHECKSUM			0x5A
+-#define ITEM_HDR_FIELD_VALID_CHECKCRC			0x7A
+-
+-
+-#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
+-#define MODULES_START_ADDR(id)					(NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * id))
+-#define NV_SECTOR_SIZE(id)						((id == NV_MODULE_KEYPAIR) ? (4 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
+-#define MODULE_INFO_SIZE(id)					((id == NV_MODULE_OTA || id == NV_MODULE_KEYPAIR || id == NV_MODULE_ADDRESS_TABLE) ? ((id == NV_MODULE_KEYPAIR) ? (12*FLASH_PAGE_SIZE) : (4*FLASH_PAGE_SIZE)) : (2*FLASH_PAGE_SIZE))
+-#else
+-#define MODULES_START_ADDR(id)					((id < 6) ? (NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * id)) : (NV_BASE_ADDRESS2 + FLASH_SECTOR_SIZE * (2 * (id-6))))
+-#define NV_SECTOR_SIZE(id)						((id == NV_MODULE_KEYPAIR) ?  (2 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
+-#define MODULE_INFO_SIZE(id)					((id == NV_MODULE_OTA || id == NV_MODULE_KEYPAIR || id == NV_MODULE_ADDRESS_TABLE) ? (4*FLASH_PAGE_SIZE) : (2*FLASH_PAGE_SIZE))
+-#endif
+-
+-#define MODULE_SECTOR_NUM						(2)
+-
+-#define MODULE_IDX_SIZE(id)						(MODULE_INFO_SIZE(id) - sizeof(nv_sect_info_t))
+-#define MODULE_SECT_START(id, sectNo)   		(MODULES_START_ADDR(id) + sectNo * (NV_SECTOR_SIZE(id)))
+-#define MODULE_SECT_END(id, sectNo)     		(MODULES_START_ADDR(id) + (sectNo + 1) * (NV_SECTOR_SIZE(id)))
+-#define MODULE_IDX_START(id, sectNo)    		(MODULE_SECT_START(id, sectNo) + sizeof(nv_sect_info_t))
+-#define MODULE_IDX_NUM(id)    					(MODULE_IDX_SIZE(id) / (sizeof(nv_info_idx_t)))
+-#define MODULE_CONTEXT_START(id, sectNo, len)  	(MODULE_SECT_START(id, sectNo) + MODULE_INFO_SIZE(id))
+-#define ITEM_TOTAL_LEN(len)						(len + sizeof(itemHdr_t))
+-#define FRAMECOUNT_PAYLOAD_START(opSect)		(((MODULE_SECT_START(NV_MODULE_NWK_FRAME_COUNT, opSect) + sizeof(nv_sect_info_t)) + 0x03) & (~0x03))
+-#define FRAMECOUNT_NUM_PER_SECT()				((((FLASH_SECTOR_SIZE - sizeof(nv_sect_info_t)) & (~0x03))) / 4)
+-
+-
+-
+-
+-nv_sts_t nv_resetAll(void);
+-nv_sts_t nv_resetModule(u8 modules);
+-nv_sts_t nv_flashWriteNew(u8 single, u16 id, u8 itemId, u16 len, u8 *buf);
+-nv_sts_t nv_flashReadNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf);
+-nv_sts_t nv_itemDeleteByIndex(u8 id, u8 itemId, u8 opSect, u16 opIdx);
+-nv_sts_t nv_flashSingleItemRemove(u8 id, u8 itemId, u16 len);
+-nv_sts_t nv_flashReadByIndex(u8 id, u8 itemId, u8 opSect, u16 opIdx, u16 len, u8 *buf);
+-void nv_itemLengthCheckAdd(u8 itemId, u16 len);
+-nv_sts_t nv_resetToFactoryNew(void);
+-bool nv_facrotyNewRstFlagCheck(void);
+-void nv_facrotyNewRstFlagSet(void);
+-void nv_facrotyNewRstFlagClear(void);
+-nv_sts_t nv_nwkFrameCountSaveToFlash(u32 frameCount);
+-nv_sts_t nv_nwkFrameCountFromFlash(u32 *frameCount);
+-nv_sts_t nv_flashSingleItemSizeGet(u8 id, u8 itemId, u16 *len);
+-
++/********************************************************************************************************
++ * @file    drv_nv.h
++ *
++ * @brief   This is the header file for drv_nv
++ *
++ * @author  Zigbee Group
++ * @date    2021
++ *
++ * @par     Copyright (c) 2021, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
++ *          All rights reserved.
++ *
++ *          Licensed under the Apache License, Version 2.0 (the "License");
++ *          you may not use this file except in compliance with the License.
++ *          You may obtain a copy of the License at
++ *
++ *              http://www.apache.org/licenses/LICENSE-2.0
++ *
++ *          Unless required by applicable law or agreed to in writing, software
++ *          distributed under the License is distributed on an "AS IS" BASIS,
++ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *          See the License for the specific language governing permissions and
++ *          limitations under the License.
++ *
++ *******************************************************************************************************/
++
++#pragma once
++
++
++
++/********************************************************************
++ * @brief	Flash map usage.
++ *
++* #if !defined(BOOT_LOADER_MODE) || (BOOT_LOADER_MODE == 0)
++ *																					  2M							  4M
++ *                                                                      0x200000  ------------       	0x400000  ------------
++ *	 				512k							  1M				    	 |  MAC_Addr  |      			 |  MAC_Addr  |
++ * 		0x80000  ------------			0x100000  ------------          0x1FF000 |------------|      	0x3FF000 |------------|
++ *	 			|		     |					 |  MAC_Addr  |     	    	 | F_CFG_Info |      			 | F_CFG_Info |
++ *	  		    |  	 NV_2 	 |			 0xFF000 |------------|         0x1FE000 |------------|  	    0x3FE000 |------------|
++ *	 		    |		     |					 | F_CFG_Info |     	   		 |	Reserved  |	       			 |	Reserved  |
++ *		0x7A000 |------------|			 0xFE000 |------------|     	 0xFE000 |------------| 	     0xFE000 |------------|
++ *	 		    | U_Cfg_Info |					 | U_Cfg_Info |     	   		 | U_Cfg_Info |      			 | U_Cfg_Info |
++ * 		0x78000 |------------|			 0xFC000 |------------|     	 0xFC000 |------------|      	 0xFC000 |------------|
++ *		   		| F_CFG_Info |					 |  Reserved  |     	    	 |  Reserved  |      			 |  Reserved  |
++ * 		0x77000 |------------|			 0x96000 |------------|     	 0x96000 |------------|      	 0x96000 |------------|
++ * 		   		|  MAC_Addr  |					 |     NV     |     	    	 |     NV     |      			 |     NV     |
++ * 		0x76000 |------------|			 0x80000 |------------|     	 0x80000 |------------|      	 0x80000 |------------|
++ * 		   		|		     |					 |			  |     	    	 |			  |      			 |			  |
++ * 		   		|  OTA_Image |					 |			  |     	    	 |			  |      			 |			  |
++ * 		   		|		     |					 |	OTA_Image |     	    	 |	OTA_Image |      			 |	OTA_Image |
++ * 		0x40000 |------------|					 |			  |     	    	 |			  |      			 |			  |
++ * 		   		|		     |					 |			  |     	    	 |			  |      			 |			  |
++ * 		   		|  	 NV_1 	 |			 0x40000 |------------|     	 0x40000 |------------|      	 0x40000 |------------|
++ * 		   		|		     |					 |			  |     	    	 |			  |      			 |			  |
++ * 		0x34000 |------------|					 |			  |     	    	 |			  |      			 |			  |
++ * 		   		|		     |					 |  Firmware  |     	    	 |  Firmware  |      			 |  Firmware  |
++ * 		   		|  Firmware  |	208k			 |			  | 256k	    	 |			  | 256k 			 |			  | 256k
++ * 		   		|		     |					 |			  |     	    	 |			  |         		 |			  |
++ * 		0x00000  ------------			 0x00000  ------------      	 0x00000  ------------           0x00000  ------------
++ *
++ *
++ *
++ * #else
++ *																					  2M							  4M
++ *                                                                      0x200000  ------------          0x400000  ------------
++ *	 				512k							  1M						 |  MAC_Addr  |         		 |  MAC_Addr  |
++ * 		0x80000  ------------			0x100000  ------------          0x1FF000 |------------|         0x3FF000 |------------|
++ *	 			|			 |					 |  MAC_Addr  |         		 | F_CFG_Info |         		 | F_CFG_Info |
++ *	 			|  	 NV_2 	 |			 0xFF000 |------------|         0x1FE000 |------------|         0x3FE000 |------------|
++ *	 			|			 |					 | F_CFG_Info |         		 |  Reserved  |         		 |  Reserved  |
++ *	 	0x7A000 |------------|			 0xFE000 |------------|          0xFE000 |------------|          0xFE000 |------------|
++ *	 			| U_Cfg_Info |					 | U_Cfg_Info |         		 | U_Cfg_Info |         		 | U_Cfg_Info |
++ *	 	0x78000 |------------|			 0xFC000 |------------|          0xFC000 |------------|          0xFC000 |------------|
++ *	 			| F_CFG_Info |					 |		      |         		 |		      |         		 |		      |
++ *	 	0x77000 |------------|					 |     NV     |         		 |     NV     |         		 |     NV     |
++ *	 			|  MAC_Addr  |					 |		      |         		 |		      |         		 |		      |
++ *	 	0x76000 |------------|			 0xE6000 |------------|          0xE6000 |------------|          0xE6000 |------------|
++ *	 			|		     |					 |		      |         		 |		      |         		 |		      |
++ *	 			|  	 NV_1	 |					 |		      |         		 |		      |         		 |		      |
++ *	 			|		     |					 |	OTA_Image |         		 |	OTA_Image |         		 |	OTA_Image |
++ *	 	0x6A000 |------------|					 |		      |         		 |		      |         		 |		      |
++ *	 			|		     |					 |		      |         		 |		      |         		 |		      |
++ *	 			|  OTA_Image |			 0x77000 |------------|          0x77000 |------------|          0x77000 |------------|
++ *	 			|		     |					 |		      |         		 |		      |         		 |		      |
++ *	 	0x39000 |------------|					 |		      |         		 |		      |         		 |		      |
++ *	 			|			 |					 |  Firmware  |         		 |  Firmware  |         		 |  Firmware  |
++ *	 			|  Firmware	 |	196k			 |		      | 444k    		 |		      | 444k    		 |		      | 444k
++ *	 			|			 |					 |		      |         		 |		      |         		 |		      |
++ *	 	0x08000 |------------|			 0x08000 |------------|          0x08000 |------------|          0x08000 |------------|
++ *	 			| BootLoader |					 | BootLoader |         		 | BootLoader |         		 | BootLoader |
++ *	 	0x00000  ------------			 0x00000  ------------           0x00000  ------------           0x00000  ------------
++ *
++ * #endif
++ */
++
++/* Flash Base Address define */
++#if defined(MCU_CORE_826x) || defined(MCU_CORE_8258) || defined(MCU_CORE_8278)
++	#define FLASH_TLNK_FLAG_OFFSET		8
++#elif defined(MCU_CORE_B91) || defined(MCU_CORE_B92)
++	#define FLASH_TLNK_FLAG_OFFSET		32
++#endif
++
++
++
++/************************************************************************
++ * Flash address of factory setting parameters,
++ * where are stored the MAC ADDRESS and CALIBRATION information.
++ */
++//512k flash
++#define FLASH_ADDR_OF_MAC_ADDR_512K		0x76000
++#define FLASH_ADDR_OF_F_CFG_INFO_512K	0x77000
++//1M flash
++#define FLASH_ADDR_OF_MAC_ADDR_1M		0xFF000
++#define FLASH_ADDR_OF_F_CFG_INFO_1M		0xFE000
++//2M flash
++#define FLASH_ADDR_OF_MAC_ADDR_2M		0x1FF000
++#define FLASH_ADDR_OF_F_CFG_INFO_2M		0x1FE000
++//4M flash
++#define FLASH_ADDR_OF_MAC_ADDR_4M		0x3FF000
++#define FLASH_ADDR_OF_F_CFG_INFO_4M		0x3FE000
++
++/************************************************************************/
++extern u32 g_u32MacFlashAddr;
++extern u32 g_u32CfgFlashAddr;
++
++#define MAC_BASE_ADD					(g_u32MacFlashAddr)
++#define FACTORY_CFG_BASE_ADD			(g_u32CfgFlashAddr)
++/************************************************************************/
++
++/**************************************************************************************
++ * The following is the detailed factory configure information (F_CFG_Info).
++ */
++/* 8 bytes for MAC address. */
++#define CFG_MAC_ADDRESS              	(MAC_BASE_ADD)
++
++/* 2 bytes for USB ID. */
++#define CFG_TELINK_USB_ID				(MAC_BASE_ADD + 0x40)
++
++/* 1 byte for frequency offset calibration. */
++#define CFG_FREQUENCY_OFFSET			(FACTORY_CFG_BASE_ADD)
++
++/* 2 bytes for TP GAIN.
++ * 0x77040(or 0xFE040) for BLE TP_GAIN_0, 0x77041(or 0xFE041) for BLE TP_GAIN_1,
++ * 0x77042(or 0xFE042) for zigbee TP_GAIN_0, 0x77043(or 0xFE043) for zigbee TP_GAIN_1. */
++#define CFG_TP_GAIN                  	(FACTORY_CFG_BASE_ADD + 0x42)
++
++/* Not supported for current SDK. */
++#define CFG_32K_COUNTER_CALIBRATION	 	(FACTORY_CFG_BASE_ADD + 0x80)
++
++/* Not supported for current SDK. */
++#define CFG_ADC_CALIBRATION           	(FACTORY_CFG_BASE_ADD + 0xC0)
++
++/* Not supported for current SDK. */
++#define CFG_24M_CRYSTAL_CALIBRATION     (FACTORY_CFG_BASE_ADD + 0x100)
++
++/* Not supported for current SDK. */
++#define CFG_T_SENSOR_CALIBRATION     	(FACTORY_CFG_BASE_ADD + 0x140)
++
++/* UID-based Firmware Encryption data(16 bytes), 0x77180(or 0xFE180) ~ 0x7718F(or 0xFE18F). */
++#define CFG_FIRMWARE_ENCRYPTION			(FACTORY_CFG_BASE_ADD + 0x180)
++
++/* 2 bytes for VDD_F calibration.
++ * 0x771C0(or 0xFF1C0) for DCDC trim,
++ * 0x771C1(or 0xFF1C1) for LDO trim.
++ */
++#define CFG_VDD_F_CALIBRATION			(FACTORY_CFG_BASE_ADD + 0x1C0)
++
++
++/**************************************************************************************
++ * The following is the detailed user configure information (U_CFG_Info).
++ */
++/* 16 bytes for pre-install code. */
++#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
++#define CFG_PRE_INSTALL_CODE			(0xFD000)
++#else
++#define CFG_PRE_INSTALL_CODE			(0x78000)
++#endif
++
++/* 1 byte for factory reset.
++ * If not 0xFF, means the device is doing factory reset(erase NV).
++ * The device will check this byte when powered on, if it is not 0xFF,
++ * it will erase NV first.
++ */
++#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
++#define CFG_FACTORY_RST_CNT			  	(0xFC000)
++#else
++#define CFG_FACTORY_RST_CNT			  	(0x79000)
++#endif
++
++/**************************************************************************************
++ * Flash address of NV module.
++ */
++/* MOES PATCH (vendored SDK, 2026): allow the board to relocate NV.
++ *
++ * On the Moes TS0505B the stock SDK value for boot-loader mode (0xE6000)
++ * is FATAL: NV then spans 0xE6000-0xFC000, and the keypair module at
++ * 0xF4000-0xFC000 swallows Tuya's factory blocks - the board-config JSON
++ * at 0xF8000 and the per-device identity/IEEE at 0xFB000. Storing link
++ * keys on the first join would erase the light's MAC address for good.
++ *
++ * Passing -DMOES_NV_BASE_ADDRESS=0xD8000 (Tuya's own value, back-solved
++ * from the stock NV records at 0xEA000/0xEC000/0xEE000) fixes that AND
++ * lands FLASH_ADDR_OF_OTA_IMAGE on 0x70000, which is the address the
++ * stock Tuya bootloader actually reads - the root cause of the "no
++ * further OTA updates" bug in doctor64/tuyaZigbee#23.
++ *
++ * Must be defined on the compiler command line so every translation unit
++ * (SDK included) agrees on the layout.
++ */
++#if defined(MOES_NV_BASE_ADDRESS)
++	#define NV_BASE_ADDRESS				(MOES_NV_BASE_ADDRESS)
++#elif !defined(BOOT_LOADER_MODE) || (BOOT_LOADER_MODE == 0)
++#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
++	#define NV_BASE_ADDRESS				(0x80000)
++#else
++	#define	NV_BASE_ADDRESS				(0x34000)
++	#define	NV_BASE_ADDRESS2			(0x7A000)
++#endif
++#else
++#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
++	#define NV_BASE_ADDRESS				(0xE6000)
++#else
++	#define	NV_BASE_ADDRESS				(0x6A000)
++	#define	NV_BASE_ADDRESS2			(0x7A000)
++#endif
++#endif
++
++
++/************************************************************************
++ * Flash address of APP firmware.
++ */
++#define FLASH_ADDR_OF_APP_FW			APP_IMAGE_ADDR
++
++
++/************************************************************************
++ * Flash address of OTA image.
++ */
++#if !defined(BOOT_LOADER_MODE) || (BOOT_LOADER_MODE == 0)
++#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
++	//max size = (0x80000 - 0) / 2 = 256k
++	#define FLASH_OTA_IMAGE_MAX_SIZE	((NV_BASE_ADDRESS - FLASH_ADDR_OF_APP_FW) / 2)
++#else
++	//max size = (0x34000 - 0) = 208k
++	#define FLASH_OTA_IMAGE_MAX_SIZE	(NV_BASE_ADDRESS - FLASH_ADDR_OF_APP_FW)
++#endif
++	//unchangeable address
++	#define FLASH_ADDR_OF_OTA_IMAGE		(0x40000)
++#else
++	//1M   Flash: max size = (0xE6000 - 0x8000) / 2 = 444k
++	//512k Flash: max size = (0x6A000 - 0x8000) / 2 = 196k
++	#define FLASH_OTA_IMAGE_MAX_SIZE	((NV_BASE_ADDRESS - FLASH_ADDR_OF_APP_FW) / 2)
++	//1M   Flash: ota addr = 0x8000 + 444k = 0x77000
++	//512k Flash: ota addr = 0x8000 + 196k = 0x39000
++	#define FLASH_ADDR_OF_OTA_IMAGE		(FLASH_ADDR_OF_APP_FW + FLASH_OTA_IMAGE_MAX_SIZE)
++#endif
++
++/******************************************* DUAL_MODE ********************************************************/
++/* Don't care, will be delete. */
++#if DUAL_MODE
++//NOTE: firmware must less then 192K if UDAL_MODE used
++typedef enum{
++	TYPE_TLK_MESH  						= 0x000000A3,// don't change, must same with telink mesh SDK
++	TYPE_SIG_MESH  						= 0x0000003A,// don't change, must same with telink mesh SDK
++	TYPE_TLK_BLE_SDK 					= 0x000000C3,// don't change, must same with telink mesh SDK
++	TYPE_TLK_ZIGBEE  					= 0x0000003C,// don't change, must same with telink mesh SDK
++	TYPE_DUAL_MODE_STANDBY				= 0x00000065,// dual mode state was standby to be selected
++	TYPE_DUAL_MODE_RECOVER 				= 0x00000056,// don't change, must same with telink mesh SDK, recover for mesh
++}telink_sdk_type_t;
++
++#define CFG_TELINK_SDK_TYPE				(0x73000)
++#define CFG_TELINK_SIG_MESH_CRC			(0x73040)
++#define CFG_TELINK_SIG_MESH_CODE_4K		(0x75000)
++#define CFG_TELINK_DUAL_MODE_ENABLE		(0x76080)
++#endif	/* DUAL_MODE */
++/******************************************** END ***********************************************************/
++
++
++
++
++#define NV_SECT_INFO_CHECK_BITS			6
++#define NV_SECT_INFO_CHECK_BITMASK		0x3f
++#define NV_SECT_INFO_SECTNO_BITS		(8-NV_SECT_INFO_CHECK_BITS)
++#define NV_SECT_INFO_SECTNO_BITMASK		0x3
++
++/* sector info(4Bytes) + index info(8Bytes) + index info(8Bytes) + ... */
++typedef struct{
++	u16 usedFlag;
++	u8  idName;
++	u8  opSect;    //crcCheckBit(6bits) + opSect(2bits)
++}nv_sect_info_t;
++
++typedef struct{
++	u32 offset;
++	u16 size;
++	u8  itemId;
++	u8  usedState;
++#if defined(MCU_CORE_B91) || defined(MCU_CORE_B92)
++	u8  resv[8];   //PUYA flash only supports re-write 64 times
++#endif
++}nv_info_idx_t;
++
++/* item:  item_hdr(8Bytes) + payload*/
++typedef struct{
++	u32 checkSum;
++	u16 size;
++	u8  itemId;
++	u8  used;
++}itemHdr_t;
++
++typedef struct{
++	u16 opIndex;
++	u8 	opSect;
++}itemIfno_t;
++
++//If OTA enabled, the maximum space used for nv module t is 56K, thus the item num cannot over 14
++/*****************************************************************************************************************************
++ * Store zigbee information in flash.
++ * 		Module ID				|			512K Flash				|			1M Flash				|
++ * -----------------------------|-----------------------------------|-----------------------------------|
++ * NV_MODULE_ZB_INFO			|		0x34000 - 0x36000			|		0x80000 - 0x82000			|
++ * NV_MODULE_ADDRESS_TABLE		|		0x36000 - 0x38000			|		0x82000 - 0x84000			|
++ * NV_MODULE_APS				|		0x38000 - 0x3a000			|		0x84000 - 0x86000			|
++ * NV_MODULE_ZCL				|		0x3a000 - 0x3c000			|		0x86000 - 0x88000			|
++ * NV_MODULE_NWK_FRAME_COUNT	|		0x3c000 - 0x3e000			|		0x88000 - 0x8a000			|
++ * NV_MODULE_OTA				|		0x3e000 - 0x40000			|		0x8a000 - 0x8c000			|
++ * NV_MODULE_APP				|		0x7a000 - 0x7c000			|		0x8c000 - 0x8e000			|
++ * NV_MODULE_KEYPAIR			|		0x7c000 - 0x80000			|		0x8e000 - 0x96000			|
++ * 								|	*16K - can store 127 nodes		|	*32K - can store 302 nodes		|
++ * NV_MAX_MODULS
++ */
++typedef enum{
++	NV_MODULE_ZB_INFO 				= 0,      /* mustn't modify it */
++	NV_MODULE_ADDRESS_TABLE 		= 1,      /* mustn't modify it */
++    NV_MODULE_APS 					= 2,      /* mustn't modify it */
++    NV_MODULE_ZCL 					= 3,      /* mustn't modify it */
++	NV_MODULE_NWK_FRAME_COUNT 		= 4,      /* mustn't modify it */
++	NV_MODULE_OTA 					= 5,
++	NV_MODULE_APP 					= 6,
++	NV_MODULE_KEYPAIR 				= 7,
++    NV_MAX_MODULS
++}nv_module_t;
++
++typedef enum{
++	NV_ITEM_ID_INVALID				= 0,/* Item id 0 should not be used. */
++
++	NV_ITEM_ZB_INFO 				= 1, /* mustn't modify it */
++	NV_ITEM_ADDRESS_FOR_NEIGHBOR,        /* mustn't modify it */
++	NV_ITEM_ADDRESS_FOR_BIND,            /* mustn't modify it */
++	NV_ITEM_APS_SSIB,                    /* mustn't modify it */
++	NV_ITEM_APS_GROUP_TABLE,             /* mustn't modify it */
++	NV_ITEM_APS_BINDING_TABLE,           /* mustn't modify it */
++
++	NV_ITEM_NWK_FRAME_COUNT,             /* mustn't modify it */
++
++	NV_ITEM_SS_KEY_PAIR,                 /* mustn't modify it */
++
++	NV_ITEM_OTA_HDR_SERVERINFO,
++	NV_ITEM_OTA_CODE,
++
++	NV_ITEM_ED_TIMEOUT,
++
++	NV_ITEM_ZCL_REPORT 				= 0x20,
++	NV_ITEM_ZCL_ON_OFF,
++	NV_ITEM_ZCL_LEVEL,
++	NV_ITEM_ZCL_COLOR_CTRL,
++	NV_ITEM_ZCL_SCENE_TABLE,
++	NV_ITEM_ZCL_GP_PROXY_TABLE,
++	NV_ITEM_ZCL_GP_SINK_TABLE,
++	NV_ITEM_ZCL_WWAH_APS_AUTH_INFO,
++	NV_ITEM_ZCL_WWAH_APS_ACKS_INFO,
++	NV_ITEM_ZCL_WWAH_USE_TC_CLUSTER_INFO,
++
++	NV_ITEM_APP_SIMPLE_DESC,
++	NV_ITEM_APP_POWER_CNT,
++	NV_ITEM_APP_GP_TRANS_TABLE,
++
++	NV_ITEM_APS_BINDING_TABLE_V2    = 0x80,  /* mustn't modify it */
++
++	NV_ITEM_ID_MAX					= 0xFF,/* Item id 0xFF should not be used. */
++}nv_item_t;
++
++typedef enum{
++	NV_SUCC,
++    NV_INVALID_MODULS 				= 1,
++    NV_INVALID_ID ,
++    NV_ITEM_NOT_FOUND,
++    NV_NOT_ENOUGH_SAPCE,
++    NV_ITEM_LEN_NOT_MATCH,
++    NV_CHECK_SUM_ERROR,
++    NV_ENABLE_PROTECT_ERROR,
++    NV_NO_MEDIA,
++    NV_DATA_CHECK_ERROR,
++	NV_ITEM_CHECK_ERROR,
++	NV_MODULE_NOT_FOUND,
++	NV_MODULE_ERASE_NEED
++} nv_sts_t;
++
++
++#define FLASH_PAGE_SIZE							256
++#define	FLASH_SECTOR_SIZE						4096//4K
++
++#define NV_SECTOR_VALID							0x5A5A
++#define NV_SECTOR_VALID_CHECKCRC				0x7A7A
++#define NV_SECTOR_VALID_READY_CHECKCRC			0xFAFA
++#define NV_SECTOR_INVALID						0x5050
++#define NV_SECTOR_IDLE							0xFFFF
++
++#define ITEM_FIELD_VALID						0x5A
++#define ITEM_FIELD_VALID_SINGLE					0x7A
++#define ITEM_FIELD_INVALID						0x50
++#define ITEM_FIELD_OPERATION					0xFA
++#define ITEM_FIELD_IDLE							0xFF
++
++#define ITEM_HDR_FIELD_VALID_CHECKSUM			0x5A
++#define ITEM_HDR_FIELD_VALID_CHECKCRC			0x7A
++
++
++/* MOES PATCH (vendored SDK, 2026-08-28, build 16): every NV flash address
++ * is derived from a runtime module id, and sector numbers come from values
++ * read back out of the sector headers themselves. Stock macros turn ANY
++ * garbage into a real flash address anywhere on the chip: on the bench, a
++ * crash-looping image with corrupted state drove these macros with garbage
++ * arguments and programmed ~100 KB of 1->0 bit damage across its own
++ * application region, bricking the module until a wired reflash
++ * (bughunt/build15_runaway_cascade.md). Hardening, applied at the macro
++ * layer so every derivation site is covered:
++ *  - moes_nv_module_id_checked(): a module id outside the enum parks the
++ *    CPU in a volatile spin instead of computing an address. The armed
++ *    watchdog then resets the chip and flash stays untouched - a visible,
++ *    recoverable failure. Legitimate callers pass compile-time ids and
++ *    can never trip this.
++ *  - moes_nv_sect_no_checked(): sector numbers parsed from (possibly
++ *    corrupted) headers are clamped into range, so a torn header can at
++ *    worst redirect an access within the module's own NV area.
++ */
++#define MOES_NV_MODULE_SECTOR_NUM				(2)
++
++static inline u16 moes_nv_module_id_checked(u16 id){
++	if(id > NV_MODULE_KEYPAIR){
++		volatile u32 moes_nv_halt = 0;
++		while(!moes_nv_halt){
++			moes_nv_halt = 0;
++		}
++	}
++	return id;
++}
++
++static inline u8 moes_nv_sect_no_checked(u8 sectNo){
++	return (sectNo < MOES_NV_MODULE_SECTOR_NUM) ? sectNo : (u8)(MOES_NV_MODULE_SECTOR_NUM - 1);
++}
++
++#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
++#define MODULES_START_ADDR(id)					(NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * moes_nv_module_id_checked(id)))
++#define NV_SECTOR_SIZE(id)						((moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR) ? (4 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
++#define MODULE_INFO_SIZE(id)					((moes_nv_module_id_checked(id) == NV_MODULE_OTA || moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR || moes_nv_module_id_checked(id) == NV_MODULE_ADDRESS_TABLE) ? ((moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR) ? (12*FLASH_PAGE_SIZE) : (4*FLASH_PAGE_SIZE)) : (2*FLASH_PAGE_SIZE))
++#else
++#define MODULES_START_ADDR(id)					((moes_nv_module_id_checked(id) < 6) ? (NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * moes_nv_module_id_checked(id))) : (NV_BASE_ADDRESS2 + FLASH_SECTOR_SIZE * (2 * (moes_nv_module_id_checked(id)-6))))
++#define NV_SECTOR_SIZE(id)						((moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR) ?  (2 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
++#define MODULE_INFO_SIZE(id)					((moes_nv_module_id_checked(id) == NV_MODULE_OTA || moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR || moes_nv_module_id_checked(id) == NV_MODULE_ADDRESS_TABLE) ? (4*FLASH_PAGE_SIZE) : (2*FLASH_PAGE_SIZE))
++#endif
++
++#define MODULE_SECTOR_NUM						(2)
++
++#define MODULE_IDX_SIZE(id)						(MODULE_INFO_SIZE(id) - sizeof(nv_sect_info_t))
++#define MODULE_SECT_START(id, sectNo)   		(MODULES_START_ADDR(id) + moes_nv_sect_no_checked(sectNo) * (NV_SECTOR_SIZE(id)))
++#define MODULE_SECT_END(id, sectNo)     		(MODULES_START_ADDR(id) + (moes_nv_sect_no_checked(sectNo) + 1) * (NV_SECTOR_SIZE(id)))
++#define MODULE_IDX_START(id, sectNo)    		(MODULE_SECT_START(id, sectNo) + sizeof(nv_sect_info_t))
++#define MODULE_IDX_NUM(id)    					(MODULE_IDX_SIZE(id) / (sizeof(nv_info_idx_t)))
++#define MODULE_CONTEXT_START(id, sectNo, len)  	(MODULE_SECT_START(id, sectNo) + MODULE_INFO_SIZE(id))
++#define ITEM_TOTAL_LEN(len)						(len + sizeof(itemHdr_t))
++#define FRAMECOUNT_PAYLOAD_START(opSect)		(((MODULE_SECT_START(NV_MODULE_NWK_FRAME_COUNT, opSect) + sizeof(nv_sect_info_t)) + 0x03) & (~0x03))
++#define FRAMECOUNT_NUM_PER_SECT()				((((FLASH_SECTOR_SIZE - sizeof(nv_sect_info_t)) & (~0x03))) / 4)
++
++
++
++
++nv_sts_t nv_resetAll(void);
++nv_sts_t nv_resetModule(u8 modules);
++nv_sts_t nv_flashWriteNew(u8 single, u16 id, u8 itemId, u16 len, u8 *buf);
++nv_sts_t nv_flashReadNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf);
++nv_sts_t nv_itemDeleteByIndex(u8 id, u8 itemId, u8 opSect, u16 opIdx);
++nv_sts_t nv_flashSingleItemRemove(u8 id, u8 itemId, u16 len);
++nv_sts_t nv_flashReadByIndex(u8 id, u8 itemId, u8 opSect, u16 opIdx, u16 len, u8 *buf);
++void nv_itemLengthCheckAdd(u8 itemId, u16 len);
++nv_sts_t nv_resetToFactoryNew(void);
++bool nv_facrotyNewRstFlagCheck(void);
++void nv_facrotyNewRstFlagSet(void);
++void nv_facrotyNewRstFlagClear(void);
++nv_sts_t nv_nwkFrameCountSaveToFlash(u32 frameCount);
++nv_sts_t nv_nwkFrameCountFromFlash(u32 *frameCount);
++nv_sts_t nv_flashSingleItemSizeGet(u8 id, u8 itemId, u16 *len);
++
+--- a/tl_zigbee_sdk/zigbee/mac/mac_pib.c
++++ b/tl_zigbee_sdk/zigbee/mac/mac_pib.c
+@@ -141,6 +141,22 @@
+ _CODE_MAC_ void generateIEEEAddr(void){
+ 	u8 addr[8];
+ 
++	/* MOES PATCH (vendored SDK, 2026): stock Tuya firmware identifies the
++	 * device by the ASCII EUI-64 inside its factory block at 0x0FB000+0x58
++	 * (Telink OUI a4:c1:38...), NOT by the conventional binary block at
++	 * CFG_MAC_ADDRESS (which on these boards holds no valid MAC in either
++	 * byte order). Keeping the stock IEEE means an OTA-updated light keeps
++	 * its zigbee2mqtt identity - no re-pairing, no database surgery. */
++#if MOES_TS0505B
++	{
++		extern bool moes_flashGetIeee(u8 *ieee);
++		if(moes_flashGetIeee(addr)){
++			ZB_IEEE_ADDR_COPY(ZB_PIB_EXTENDED_ADDRESS(), addr);
++			return;
++		}
++	}
++#endif
++
+ 	flash_read(CFG_MAC_ADDRESS, 8, addr);
+ 
+ 	if(ZB_IEEE_ADDR_IS_INVALID(addr)){
+--- a/tl_zigbee_sdk/zigbee/ota/ota.c
++++ b/tl_zigbee_sdk/zigbee/ota/ota.c
+@@ -160,6 +160,9 @@
+ 
+ 		while(totalLen > 0){
+ 			wLen = (totalLen > 256) ? 256 : totalLen;
++#if (MODULE_WATCHDOG_ENABLE)
++			drv_wd_clear();
++#endif
+ 			flash_read(sAddr, wLen, buf);
+ 			if(oft == 0){
+ 				buf[FLASH_TLNK_FLAG_OFFSET] = TL_IMAGE_START_FLAG;
+@@ -194,9 +197,69 @@
+ 	flash_unlock();
+ #endif
+ 
+-	if(flash_writeWithCheck((newAddr + FLASH_TLNK_FLAG_OFFSET), 1, &flashInfo) == TRUE){
+-		reboot = 1;
++	/*
++	 * MOES build 08 — OTA-install fix. Never gate the install reboot on a flash
++	 * verify. flash_writeWithCheck() is write-then-verify (proj/drivers/drv_flash.c):
++	 * the 0x4b "KNLT" flag byte can land at 0x70008 while the function still returns
++	 * FALSE, and ota_mcuReboot() used to skip SYSTEM_RESET() in exactly that case.
++	 * Observed on hardware: staged image CRC-valid at 0x70000, flag 0x4b present,
++	 * app slot untouched, device still on old firmware — the bootloader never ran.
++	 * The flag byte needs no erase (0xff -> 0x4b only clears bits) and a wrong flag
++	 * byte is harmless because the bootloader CRC-gates the install, so write the
++	 * flag unconditionally and always reboot. See bughunt/ota_no_install.md.
++	 */
++	flash_write((newAddr + FLASH_TLNK_FLAG_OFFSET), 1, &flashInfo);   // set KNLT 'K'
++	flash_writeWithCheck((newAddr + FLASH_TLNK_FLAG_OFFSET), 1, &flashInfo); // best-effort retry/verify; result ignored
++
++	/*
++	 * MOES build 09 — OTA-install descriptor at 0xF7000.
++	 *
++	 * The real Tuya bootloader is a 5-state install machine, not the SDK
++	 * bootLoader sample (bughunt/install_sm.md). Its dispatch first reads a
++	 * 12-byte descriptor from flash 0xF7000 and takes the state selector from
++	 * byte8; the 0x4b flag at staging+8 is only checked later, in state 3. A
++	 * missing descriptor (erased, all 0xFF) therefore makes the bootloader skip
++	 * the install entirely: the download completes, the reset runs, and the
++	 * device silently keeps the old image. The stock app writes this descriptor
++	 * in its own OTA-complete path before reset (install_sm.md §5); our
++	 * SDK-based ota_mcuReboot() never did, which is why ours->ours installs
++	 * never commit.
++	 *
++	 * Descriptor format (12 bytes, little-endian): word0 = 0x70001, word1 =
++	 * 0x70000 (staging base address), byte8 = 1. Bytes 9..11 are unused; we
++	 * write them as 0. The bootloader's guard is literally
++	 * "word0 == byte8 + word1" (install_sm.md §10): 0x70001 == 1 + 0x70000.
++	 * Build 09 wrote word1 = image size, which fails that guard, so the
++	 * bootloader rejected the staged image — proven on hardware 2026-08-17
++	 * (full ours->ours download, reset, device came back on the old build).
++	 * The stock app's own descriptor is exactly {0x70001, 0x70000, 1}.
++	 *
++	 * Erase handling mirrors the stock app: it erases 0xF7000 before writing the
++	 * descriptor (install_sm.md §5), and the bootloader's own write-back does the
++	 * same (§3.4). The descriptor sector is 0xF7000..0xF7FFF — exactly one 4 KB
++	 * sector below the protected Tuya board-config sector at 0xF8000. Erasing
++	 * 0xF8000 would destroy the board config, so the address is bound-checked at
++	 * compile time below and must never be moved without re-checking the sector
++	 * boundary. Plain flash_write() is deliberate: the reset must never be gated
++	 * on a read-back verify.
++	 */
++	{
++		/* Negative-array-size idiom (tc32 toolchain predates C11): the descriptor
++		 * sector must be exactly the 4 KB immediately below 0xF8000. */
++		enum { MOES_OTA_DESC_ADDR = 0xF7000 };
++		typedef char moes_otaDescSectorBelowBoardCfg[
++			((MOES_OTA_DESC_ADDR + FLASH_SECTOR_SIZE) == 0xF8000) ? 1 : -1];
++
++		u32 installDesc[3];
++		installDesc[0] = 0x00070001u;                         /* word0: staged-image marker */
++		installDesc[1] = 0x00070000u;                         /* word1: staging base — guard is word0 == byte8 + word1 (build 09 wrote size and was rejected, install_sm.md §10) */
++		installDesc[2] = 1;                                   /* byte8: state selector */
++
++		flash_erase(MOES_OTA_DESC_ADDR);                        /* sector 0xF7000..0xF7FFF, one below board config */
++		flash_write(MOES_OTA_DESC_ADDR, sizeof(installDesc), (u8 *)installDesc); /* 12-byte install descriptor */
+ 	}
++
++	reboot = 1;
+ #else
+ 	u32 baseAddr = 0;
+ 
+@@ -1450,8 +1513,20 @@
+ 		zcl_attr_downloadFileVer = pQueryNextImageRsp->fileVer;
+ 		g_otaCtx.downloadImageSize = pQueryNextImageRsp->imageSize;
+ 
+-		u16 sectorNumUsed = g_otaCtx.downloadImageSize / FLASH_SECTOR_SIZE + 1;
+-		u32 baseAddr = (mcuBootAddr) ? 0 : FLASH_ADDR_OF_OTA_IMAGE;
++		/* Ceiling division: an image exactly FLASH_OTA_IMAGE_MAX_SIZE must
++		 * erase [FLASH_ADDR_OF_OTA_IMAGE, NV_BASE_ADDRESS), never one NV
++		 * sector beyond it. The former "+ 1" unconditionally erased one
++		 * extra sector, including 0xD8000 on the TS0505B max-size boundary. */
++		u16 sectorNumUsed = (g_otaCtx.downloadImageSize + FLASH_SECTOR_SIZE - 1) / FLASH_SECTOR_SIZE;
++		u32 baseAddr = (mcuBootAddr) ? 0 : FLASH_ADDR_OF_OTA_IMAGE;
++		u32 eraseEnd = baseAddr + (u32)sectorNumUsed * FLASH_SECTOR_SIZE;
++
++		/* Do not wrap or cross the configured OTA bank. The image-size check
++		 * above is necessary but insufficient when the erase count is wrong. */
++		if((eraseEnd < baseAddr) ||
++		   (!mcuBootAddr && (eraseEnd > (FLASH_ADDR_OF_OTA_IMAGE + FLASH_OTA_IMAGE_MAX_SIZE)))){
++			return ZCL_STA_INSUFFICIENT_SPACE;
++		}
+ 
+ 		for(u16 i = 0; i < sectorNumUsed; i++){
+ 			flash_erase(baseAddr + i * FLASH_SECTOR_SIZE);

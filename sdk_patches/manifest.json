@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "sdk_archive_sha256": "0d0859e2412e3a52e9c3ba012bbf5d5b7c30554b8a96632659bd500ea18f7aa3",
+  "patch": "telink_zigbee_sdk_0d0859e2_moes.patch",
+  "patch_sha256": "e99598b255ae8d9485575119e011a7259ccc2b3faebf1d357b1ed5732a30be11",
+  "files": {
+    "apps/common/main.c": {
+      "pristine_sha256": "be9df00ec6985a6a356f436bbd923426c3e34d7bdf9d51aad61036faf67798e8",
+      "patched_sha256": "ff9546dc7e74df5a65a8d47a788c1f5d8f1eb027137b7891cfb1cca3d4a01606"
+    },
+    "platform/chip_8258/spi_i.h": {
+      "pristine_sha256": "25edf1fc0d71e6ebef3b4f884077f896a0eec28507ff7b8d6714a533ded141ac",
+      "patched_sha256": "78c9820ed29e17e087ca54adec3b24af50ca9fcc179d395f4d7c965965dbd026"
+    },
+    "proj/drivers/drv_nv.h": {
+      "pristine_sha256": "0cb409beca7a708a49389a18bdae4c260a6a6aba9193d829c9f42120b763cad9",
+      "patched_sha256": "e0d977734798aadead9c47046bbeabdefc7fcd53a1059a36ffb13a32aeeec48c"
+    },
+    "zigbee/mac/mac_pib.c": {
+      "pristine_sha256": "81a0d0d0c24d490abf97f9d80d996f87755f19997bb1348fda5b2a3273751bec",
+      "patched_sha256": "1b72834ed4ebc642a69f70f809a5b7ab8883b503c09b6676fd0910abcbfeb3a2"
+    },
+    "zigbee/ota/ota.c": {
+      "pristine_sha256": "151300d4f506be95f584ea250dd4532ec1267f34d1613a90c20b9b6b8af37a6c",
+      "patched_sha256": "117e0e43c041bbedfb7c7ab1c2ab99f7b0b89a3fff2deee378cbfca7541da0c7"
+    }
+  }
+}

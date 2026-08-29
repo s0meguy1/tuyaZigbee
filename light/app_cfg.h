@@ -75,6 +75,37 @@ extern "C" {
 /* Watch dog module */
 #define MODULE_WATCHDOG_ENABLE						1
 
+/* MOES: boot-phase watchdog (2026-08-28, build 15). The stock main() starts
+ * the runtime watchdog only AFTER user_init() returns, and enables IRQs only
+ * then too. A software forward-progress stall in early initialization can
+ * therefore persist across a reset-pin reset if it recurs at the same point.
+ * The bench rf_setTrxState freeze was observed with brownout/silicon
+ * confounders, so it is not firmware proof of that path.
+ * 1 = start a long watchdog after drv_platform_init() returns (clock is up,
+ * user_init() not yet entered), then tighten to the normal 600 ms interval
+ * only after MOES_BOOT_WATCHDOG_SETTLE_MS of runtime (build 16; build 15
+ * tightened immediately after user_init() and that window change is the
+ * prime suspect for the bench corruption cascade). Coverage starts only
+ * there and applies to
+ * equivalent software stalls while Timer2 and its clock remain functional;
+ * it cannot recover a frozen timer/SRAM domain. user_init() normally
+ * completes in well under a second; 10 s is ~10x headroom while still
+ * bounding such a stall. Flash writes and erases feed the watchdog around
+ * their operations, but plain flash_read() does not. Normal reads are short;
+ * a hung read is intentionally bounded only if Timer2 continues advancing. */
+#define MOES_BOOT_WATCHDOG_ENABLE					1
+#define MOES_BOOT_WATCHDOG_BOOT_MS					10000
+
+/* MOES (build 16): keep the long boot window for this much *runtime* after
+ * user_init() returns before tightening to the stock 600 ms interval. The
+ * first post-boot cycles run the heaviest reporting/binding NV
+ * normalization; build 15 tightened immediately and the bench then lost a
+ * module to a mid-sequence corruption cascade
+ * (bughunt/build15_runaway_cascade.md). 15 s covers the post-boot and
+ * post-OTA normalization with wide margin; a genuine hang in the window is
+ * still bounded by the 10 s boot interval. */
+#define MOES_BOOT_WATCHDOG_SETTLE_MS				15000
+
 /* UART module */
 #if ZBHCI_UART
 #define	MODULE_UART_ENABLE							1

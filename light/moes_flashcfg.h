@@ -53,15 +53,15 @@ extern moes_cfg_t g_moesCfg;
 /* Parse the blocks. Safe to call more than once. */
 void moes_flashCfgLoad(void);
 
-/* ZT3L module pin number -> TLSR8258 GPIO + PWM channel. Returns FALSE if
- * the pin is not a known PWM-capable module pin. */
+/* Tuya JSON selector -> TLSR8258 GPIO + PWM channel. The selector is not a
+ * physical ZT3L module pad number. Returns FALSE if it is unknown. */
 typedef struct {
-	u8  pin;             /* module pin number */
+	u8  pin;             /* Tuya JSON selector, not a module pad number */
 	u32 gpio;            /* GPIO_PB4 ... */
 	u8  pwmChannel;      /* silicon-fixed PWM channel for this pin */
 	u16 pwmMux;          /* gpio_set_func() mux value */
 } moes_pinmap_t;
-bool moes_pinmapLookup(u8 modulePin, moes_pinmap_t *out);
+bool moes_pinmapLookup(u8 jsonPin, moes_pinmap_t *out);
 
 /* Tuya ASCII EUI-64 -> 8 bytes. FALSE if the block is absent or not
  * 16 hex digits. The Telink OUI (a4:c1:38) prefix is asserted. */
