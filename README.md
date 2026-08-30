@@ -12,11 +12,24 @@ Current version of firmware have a critical bug, making impossible next updates 
 ## MOES experimental branch warning
 
 The `moes-ts0505b` branch is experimental research, not a deployable firmware
-release. Build 12 is not silicon-tested, there is no working wedge fix, and an
-update from one custom build to another is unproven. Do not deploy it without a
-recoverable hardware programmer and a tested backup/restore procedure. The
-public-safe evidence matrix and corrected status are in
-[`bughunt/VERIFICATION_STATUS.md`](bughunt/VERIFICATION_STATUS.md).
+release.
+
+Build 20 is the furthest any build here has been carried on real hardware: on a
+single bench fixture it joined, stayed stable, and was confirmed rendering red,
+green, blue and white on command, corroborated by direct PWM-register reads.
+That is one fixture over a short window — it is not a fleet, duration, or
+field-power proof. Build 21, the current tip of this branch, is source and
+host-test only: it has never been flashed or powered.
+
+Note what does **not** count as evidence here, because it misled this project
+repeatedly: Zigbee command/readback success does not prove LED output. A
+claimed output change needs visual confirmation on a fixture with LEDs, or
+direct PWM-register evidence. Do not deploy any of this without a recoverable
+hardware programmer and a tested backup/restore procedure.
+
+`bughunt/VERIFICATION_STATUS.md` carries this project's evidence matrix. The
+copy published here is a historical snapshot and lags the branch; treat the
+paragraphs above as the current statement of what is and is not proven.
 
 This project intended to replace firmwares in TuYa devices based on Telink TLSR82XX chips
 ## Supported devices

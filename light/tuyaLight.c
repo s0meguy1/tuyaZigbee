@@ -314,17 +314,12 @@ void app_task(void)
 	localPermitJoinState();
 	if(BDB_STATE_GET() == BDB_STATE_IDLE){
 #if MOES_TS0505B
-		/* Rescue mode services the radio and the OTA cluster and nothing
-		 * else. Both of the calls skipped here write NV. */
-		if(!moes_rescueActive()){
-			factoryRst_handler();
-		}
-
+		/* Build 19: the storm flag is advisory only. Factory-reset handling,
+		 * reporting and persistence stay fully active whether it is set or not;
+		 * only zb_appCb.c may consult it for OTA cadence and join blink. */
+		factoryRst_handler();
 		report_handler();
-
-		if(!moes_rescueActive()){
-			tuyaLightAttrsChk();
-		}
+		tuyaLightAttrsChk();
 #else
 		//factroyRst_handler();
 
@@ -406,7 +401,8 @@ void user_init(bool isRetention)
 	 *
 	 * moes_rescueBootCheck() is the first NV user after stack_init() for the
 	 * same reason, and because everything below needs to know the answer.
-	 * It reads and writes exactly one byte. See moes_rescue.h. */
+	 * It uses two one-byte application items (probation and the boot-young
+	 * marker); their bounded writes are documented in moes_rescue.h. */
 	moes_rescueBootCheck();
 #endif
 
@@ -414,32 +410,23 @@ void user_init(bool isRetention)
 	user_app_init();
 
 #if MOES_TS0505B
-	if(!moes_rescueActive()){
-		factoryRst_init();
-	}
+	/* Build 18: run unconditionally. The build-16-and-earlier rescue mode
+	 * skipped this in its minimal path; with rescue now an advisory flag
+	 * (moes_rescue.h) there is no minimal path and every boot must count
+	 * power cycles like a normal light. */
+	factoryRst_init();
 #endif
 
 	/* Register except handler for test */
 	sys_exceptHandlerRegister(tuyaLightSysException);
 
-#if MOES_TS0505B
-	if(moes_rescueActive()){
-		/* Deliberately NOT light_adjust(). That path runs
-		 * tuyaLight_colorInit() -> light_applyUpdate() -> light_fresh() ->
-		 * the whole colour/level/effect machinery, which is precisely the
-		 * code rescue mode exists not to depend on. Drive the output stage
-		 * directly instead: dim cool white, fixed, forever. It is also a
-		 * usable signal for a human on a ladder - a light that comes up dim
-		 * white and ignores every command is in rescue mode, not dead. */
-		moes_outSet(0, 0, 0, 0x40, 0);
-	}else{
-		/* Adjust light state to default attributes*/
-		light_adjust();
-	}
-#else
-	/* Adjust light state to default attributes*/
+	/* Adjust light state to default attributes.
+	 * Build 18 (MOES): full state restore on EVERY boot - a light that has
+	 * just power-cycled after an outage must come up at its previous state
+	 * and answer commands immediately, storm flag or not. The advisory
+	 * flag's only visible effects (5-pulse join blink, faster OTA cadence)
+	 * live in zb_appCb.c where the join event fires. */
 	light_adjust();
-#endif
 
 	/* User's Task */
 #if ZBHCI_EN
@@ -464,4 +451,3 @@ void user_init(bool isRetention)
 }
 
 #endif  /* __PROJECT_TL_DIMMABLE_LIGHT__ */
-

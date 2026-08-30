@@ -1,56 +1,58 @@
 /********************************************************************************************************
  * @file    moes_rescue.h
  *
- * @brief   Boot probation and rescue mode: make this firmware unable to lock
- *          itself out of OTA.
+ * @brief   Boot-storm probation: an ADVISORY health flag, never a behaviour
+ *          change. Make this firmware unable to lock itself out of OTA
+ *          without ever stopping being a light.
  *
  * The risk model for this device (see POSTMORTEM_2026-08-14.md): a bug that
  * stops the light staying up long enough to receive an OTA is unrecoverable
- * without physical access, because SWire writes are broken on this silicon
- * and the stock bootloader's UART path does not answer. Every other class of
- * bug is cosmetic by comparison.
+ * without physical access. Every other class of bug is cosmetic by
+ * comparison.
  *
- * The mechanism:
+ * BUILD 18 REDESIGN. Through build 17, a tripped probation counter latched a
+ * separate "rescue mode": dim fixed white output, every command ignored,
+ * application init skipped, cleared only by 20 joined minutes plus another
+ * power cycle. On 2026-08-29 that held a healthy converted fixture hostage
+ * for half an hour, and the design is untenable for a house: routine power
+ * events must never cost responsiveness, and a state-restore automation
+ * needs the light to answer the moment mains returns. The new contract:
  *
- *   - One byte in our own NV module counts *consecutive boots that never
- *     reached a stable state*. It is incremented once per boot, right after
- *     stack_init() returns (nv_init() lives inside zb_init(), so anything
- *     earlier is operating on an uninitialised NV subsystem - that ordering
- *     mistake is what cost us a fixture).
+ *   - A light ALWAYS boots fully functional and answers commands from the
+ *     first second, probation or not. Nothing in this module may gate
+ *     output, clusters, attributes, or init.
  *
- *   - It is cleared when the light has been *joined* continuously for
- *     MOES_RESCUE_STABLE_MINUTES, which is set longer than an OTA takes. A
- *     firmware that can hold the network that long is by definition
- *     recoverable, so the counter goes back to zero.
+ *   - Probation counts RAPID-BOOT STORMS only. Every boot writes a "young"
+ *     marker; a 60 s timer (moes_rescueGrownupCb) clears it. A boot that
+ *     inherits a still-young predecessor is part of a storm (any
+ *     watchdog-bounded loop dies inside its boot interval) and increments
+ *     probation. A boot whose predecessor grew up - a routine power-on, an
+ *     outage restore, a breaker cycle - wipes the history instead. The
+ *     2 s-windowed factory-reset gesture therefore can never trip it
+ *     either (three quick gesture boots build at most 3 of 6).
  *
- *     Build 09: "joined continuously" is now "joined AND the scheduler is
- *     still making progress", with a one-minute confirmation window after the
- *     countdown reaches zero. A joined-but-wedged stack (boothang_stack.md)
- *     leaves zb_isDeviceJoinedNwk() set while the cooperative scheduler has
- *     stalled; the clear must not commit on such a boot, or the probation
- *     history that a wedge needs is erased. The effective healthy window is
- *     therefore MOES_RESCUE_STABLE_MINUTES + 1 minutes.
+ *   - When the counter reaches MOES_RESCUE_FAIL_THRESHOLD the flag is set
+ *     and does exactly two things, both advisory: the OTA query interval
+ *     drops to MOES_RESCUE_OTA_QUERY_SECONDS (a storming light phones home
+ *     every cycle - that is the entire recovery story), and the join blink
+ *     runs 5 pulses instead of 2 so a human can tell. No other behaviour
+ *     exists to change.
  *
- *   - It is also cleared by a completed 3-power-cycle factory-reset gesture,
- *     so a human deliberately re-pairing a light can never drive it into
- *     rescue mode (see MOES_RESCUE_FAIL_THRESHOLD below).
+ *   - The stable clock (joined + scheduler progress for
+ *     MOES_RESCUE_STABLE_MINUTES, with the build-09 confirmation minute)
+ *     still clears the counter during long healthy runs, and the
+ *     3-power-cycle factory-reset gesture still clears it on completion.
  *
- *   - Once the counter reaches MOES_RESCUE_FAIL_THRESHOLD the light latches
- *     rescue mode: it joins the network, services the OTA cluster, and does
- *     nothing else. No effect engine, no power-cycle counter, no attribute
- *     persistence, no manufacturer-cluster commands, no light_adjust().
- *
- * Flash wear is bounded by construction. A light in a reset loop writes the
- * counter at most MOES_RESCUE_FAIL_THRESHOLD times and then *stops* - it does
- * not write on a boot that latches rescue mode. Rescue mode additionally
- * skips factoryRst_init() (two NV writes per boot) and the attribute-store
- * timer, so a latched light in a permanent loop does zero NV writes.
+ * Flash wear is bounded: healthy boots write nothing here; a storming light
+ * stops writing probation once latched and writes the one-byte young marker
+ * per boot attempt.
  *
  * The mechanism is fail-safe in the direction that matters: any failure to
- * read or write the counter, and any garbage value, ends in rescue mode or a
- * normal boot - never in a state where OTA is unavailable.
+ * read or write the counters, and any garbage value, ends in an advisory
+ * flag or a clean boot - never in a state where the light stops being a
+ * light or OTA is unavailable.
  *
- * See FALLBACK_DESIGN.md for the full design, failure modes and test plan.
+ * See FALLBACK_DESIGN.md for the original design and its history.
  *
  * @date    2026
  *******************************************************************************************************/
@@ -66,49 +68,50 @@ extern "C" {
 #define MOES_RESCUE_ENABLE              1
 #endif
 
-/* Consecutive unstable boots before the light gives up and comes up minimal.
+/* Rapid-boot-storm boots before the advisory flag latches.
  *
- * Must stay comfortably above the 3-power-cycle pairing gesture (rstnum:3),
- * because a user performing that gesture does produce three quick boots. Six
- * gives 2x margin, and factoryRst_handler() clears the counter when the
- * gesture completes, so the gesture can never latch rescue mode on its own.
- *
- * A genuine reset loop at ~10 s/cycle reaches six in about a minute. */
+ * Comfortably above the 3-power-cycle pairing gesture, whose quick boots
+ * build at most 3 (and whose completed gesture calls moes_rescueClear()
+ * anyway). A watchdog-bounded reset loop reaches six in a few minutes. */
 #ifndef MOES_RESCUE_FAIL_THRESHOLD
 #define MOES_RESCUE_FAIL_THRESHOLD      6
 #endif
 
-/* How long the light must stay joined before it is declared healthy.
- *
- * This is deliberately longer than an OTA download (~30 min is the observed
- * worst case, but that includes stalls; 20 min of *continuous* uptime is
- * enough to start and mostly finish one, and a light that can do that can be
- * retried). Setting it shorter would let a firmware that faults after, say,
- * 12 minutes clear its counter on every boot and never trip rescue mode. */
+/* How long the light must stay joined (and making scheduler progress)
+ * before the stable clock clears the probation count. Purely advisory now:
+ * a routine power-on after this much runtime already wiped the history at
+ * its own boot, so this only shortens the flag's tail on a light that
+ * recovered mid-storm without a power event. */
 #ifndef MOES_RESCUE_STABLE_MINUTES
 #define MOES_RESCUE_STABLE_MINUTES      20
 #endif
 
-/* How often a light in rescue mode asks the coordinator for an image.
+/* How often a storm-flagged light asks the coordinator for an image.
  * Normal operation uses MY_OTA_PERIODIC_QUERY_INTERVAL (6 hours); a light
- * that has told us it cannot run should be asking far more often than that. */
+ * that keeps dying should ask far more often than that. */
 #ifndef MOES_RESCUE_OTA_QUERY_SECONDS
 #define MOES_RESCUE_OTA_QUERY_SECONDS   (10 * 60U)
 #endif
 
-/* Define MOES_RESCUE_FORCE at build time to come up in rescue mode
- * unconditionally. This is how rescue mode gets soak-tested on a bench unit
- * without having to write a firmware that actually crashes. Never ship it. */
+/* Define MOES_RESCUE_FORCE at build time to set the advisory flag
+ * unconditionally - the early OTA cadence plus the 5-pulse join blink, with
+ * no behavioural difference to test around. This is how the flag path gets
+ * soak-tested on a bench unit. Never ship it. */
 
 /*
- * Decide this boot's mode. MUST be called after stack_init() returns and
- * before anything else touches NV, schedules a timer, or drives the output.
+ * Decide this boot's storm status. MUST be called after stack_init()
+ * returns and before anything else touches NV, schedules a timer, or
+ * drives the output.
  */
 void moes_rescueBootCheck(void);
 
-/* TRUE if this boot is running minimal/rescue. Safe to call at any time,
- * including before moes_rescueBootCheck() (returns FALSE). */
+/* TRUE if this device recently storm-counted. ADVISORY ONLY (build 18):
+ * gates the OTA query cadence and the join-blink pattern, nothing else. */
 bool moes_rescueActive(void);
+
+/* One-shot: clears the boot "young" marker. Scheduled by
+ * moes_rescueBootCheck(); exposed for the hosttest shim. */
+s32 moes_rescueGrownupCb(void *arg);
 
 /*
  * Start (or leave running) the "has been joined and making progress long
@@ -124,7 +127,7 @@ void moes_rescueStableTimerStart(void);
  */
 void moes_rescueClear(void);
 
-/* Current consecutive-unstable-boot count, for diagnostics. */
+/* Current storm-boot count, for diagnostics. */
 u8 moes_rescueFailCount(void);
 
 #if defined(__cplusplus)

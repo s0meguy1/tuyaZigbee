@@ -42,7 +42,7 @@
  *
  * The rule is therefore:
  *
- *     once this boot has had network credentials (armed), if the cooperative
+ *     once BDB initialisation has succeeded (armed), if the cooperative
  *     scheduler has made no progress for MOES_LIVENESS_PROGRESS_RESET_S, force
  *     a reset - joined or not.
  *
@@ -50,13 +50,16 @@
  *
  *   - Wedged rejoin scan (class 1): the ticker starves, the IRQ sampler fires
  *     after ~60 s. The next boot increments probation, so a repeating wedge
- *     latches rescue mode instead of bricking.
+ *     raises the advisory storm flag and gets an earlier OTA query cadence.
  *   - Joined-but-silent APS/NWK wedge (class 2): same - joined no longer
  *     suppresses the fuse.
  *   - Coordinator genuinely offline: the scheduler keeps running, so the ticker
  *     keeps firing and no reset happens. The fuse no longer depends on radio
  *     traffic at all.
- *   - Factory-new pairing: never armed (no credentials yet), so never reset.
+ *   - Factory-new pairing: armed after BDB initialisation just like a rejoin.
+ *     Healthy commissioning advances the cooperative ticker, so it stays up;
+ *     a scheduler wedge before the first join resets instead of staying
+ *     silent forever.
  *   - Leave / factory-reset gesture: those paths reboot on their own within
  *     seconds, long before the fuse expires.
  *
@@ -73,8 +76,8 @@
  * (liveness_redesign.md S2.4). Rescue probation is unaffected: it counts every
  * un-clean boot on the next boot regardless of the skip flag.
  *
- * Runs in rescue mode too - a rescue-mode light is exactly the one whose wedge
- * must keep causing resets.
+ * Runs while storm-flagged too - a flagged light is exactly the one whose
+ * wedge must keep causing resets.
  *
  * @date    2026
  *******************************************************************************************************/
@@ -108,19 +111,20 @@ extern "C" {
  *
  * Must comfortably exceed a legitimate rejoin and any short task-context stall.
  * A live scheduler advances the progress ticker every second, so any value from
- * ~30 s up is safe against false positives; 60 s keeps the wedge->reset->rescue
- * chain under ~15 minutes of wall time. */
+ * ~30 s up is safe against false positives; 60 s keeps the wedge->reset->storm
+ * flag chain under ~15 minutes of wall time. */
 #ifndef MOES_LIVENESS_PROGRESS_RESET_S
 #define MOES_LIVENESS_PROGRESS_RESET_S      60U
 #endif
 
 /*
- * This boot has network credentials and expects to be joined: arm the monitor.
- * Call from the BDB init callback when it reports the device is on a network.
- * Without this, a boot-time rejoin that wedges before ever joining would be
+ * BDB initialisation succeeded: arm the monitor on every boot, whether or not
+ * the device already has network credentials. Call only from the successful
+ * BDB init callback, after the stack and cooperative timer infrastructure are
+ * ready. Without this, a factory-new boot that wedges before its first join is
  * invisible to the monitor.
  */
-void moes_livenessBootedOnNetwork(void);
+void moes_livenessBooted(void);
 
 /*
  * The stack completed a join/rejoin this boot: arm the monitor and restart the

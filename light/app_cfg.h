@@ -89,12 +89,19 @@ extern "C" {
  * there and applies to
  * equivalent software stalls while Timer2 and its clock remain functional;
  * it cannot recover a frozen timer/SRAM domain. user_init() normally
- * completes in well under a second; 10 s is ~10x headroom while still
- * bounding such a stall. Flash writes and erases feed the watchdog around
- * their operations, but plain flash_read() does not. Normal reads are short;
- * a hung read is intentionally bounded only if Timer2 continues advancing. */
+ * completes in well under a second; the interval below is headroom while
+ * still bounding such a stall. Flash writes and erases feed the watchdog
+ * around their operations, but plain flash_read() does not. Normal reads
+ * are short; a hung read is intentionally bounded only if Timer2 continues
+ * advancing. Since build 17 the interval also has to cover an unjoined
+ * boot's commissioning phases (see MOES_BOOT_WATCHDOG_BOOT_MS). */
 #define MOES_BOOT_WATCHDOG_ENABLE					1
-#define MOES_BOOT_WATCHDOG_BOOT_MS					10000
+/* MOES (build 17): 30 s (was 10 s). A blank-NV boot runs channel scans and
+ * commissioning before the join completes; 10 s starved that phase on the
+ * field pilot (2026-08-29) and rescue-mode boots never reached their OTA
+ * query. The main loop still clears the watchdog every iteration, so a true
+ * hang stays bounded at this interval. */
+#define MOES_BOOT_WATCHDOG_BOOT_MS					30000
 
 /* MOES (build 16): keep the long boot window for this much *runtime* after
  * user_init() returns before tightening to the stock 600 ms interval. The

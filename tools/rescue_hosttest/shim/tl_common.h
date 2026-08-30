@@ -62,6 +62,8 @@ nv_sts_t nv_flashWriteNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf);
 bool     zb_isDeviceJoinedNwk(void);
 ev_timer_event_t *host_timerSchedule(ev_timer_callback_t cb, void *arg, u32 ms);
 void     host_systemReset(void);
+void     host_timerCancel(ev_timer_event_t **evt);
 
 #define TL_ZB_TIMER_SCHEDULE(cb, arg, ms)  host_timerSchedule((cb), (arg), (ms))
+#define TL_ZB_TIMER_CANCEL(evtPtr)         host_timerCancel((evtPtr))
 #define SYSTEM_RESET()                     host_systemReset()

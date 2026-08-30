@@ -135,6 +135,12 @@ typedef struct{
 #if COLOR_RGB_SUPPORT
 	u8	currentHue;
 	u8	currentSaturation;
+	/* The TS0505B advertises the XY capability. These are the scalar ZCL
+	 * command-state values used for CurrentX/CurrentY reads and reporting;
+	 * they are intentionally not persisted because the existing NV colour
+	 * record only restores the HSV/CCT output state. */
+	u16 currentX;
+	u16 currentY;
 	u8	colorLoopActive;
 	u8	colorLoopDirection;
 	u16	colorLoopTime;

@@ -44,6 +44,10 @@
  */
 static ev_timer_event_t *onWithTimedOffTimerEvt = NULL;
 
+/* Defined below the timed-off callback. A plain On must cancel an old timer
+ * before it can consume stale OnTime/OffWaitTime state. */
+static void tuyaLight_OnWithTimedOffTimerStop(void);
+
 /**********************************************************************
  * FUNCTIONS
  */
@@ -89,9 +93,22 @@ void tuyaLight_updateOnOff(void)
  *
  * @return  None
  */
-void tuyaLight_onoff(u8 cmd)
+static void tuyaLight_onoffApply(u8 cmd, bool cancelTimedOff)
 {
 	zcl_onOffAttr_t *pOnOff = zcl_onoffAttrGet();
+
+	/* ZCL On (0x01) is a new manual intent, not a continuation of an older
+	 * On-With-Timed-Off transaction. The two countdown attributes are runtime
+	 * state only; clear them and remove the outstanding callback before the
+	 * output update so that a stale timer can never turn this new On back off.
+	 *
+	 * On-With-Timed-Off itself deliberately passes FALSE below after it has
+	 * installed its fresh values, preserving its max/min command semantics. */
+	if(cancelTimedOff && cmd == ZCL_CMD_ONOFF_ON){
+		pOnOff->onTime = 0;
+		pOnOff->offWaitTime = 0;
+		tuyaLight_OnWithTimedOffTimerStop();
+	}
 
 	if(cmd == ZCL_CMD_ONOFF_ON){
 		pOnOff->globalSceneControl = TRUE;
@@ -123,6 +140,14 @@ void tuyaLight_onoff(u8 cmd)
 	zcl_sceneAttr_t *pScene = zcl_sceneAttrGet();
 	pScene->sceneValid = 0;
 #endif
+}
+
+void tuyaLight_onoff(u8 cmd)
+{
+	/* This public entry point is used by ordinary On/Off/Toggle dispatch and
+	 * boot restoration. Only the literal plain On command cancels timed-off
+	 * state; On-With-Timed-Off uses the private apply helper below. */
+	tuyaLight_onoffApply(cmd, TRUE);
 }
 
 /*********************************************************************
@@ -200,7 +225,9 @@ static void tuyaLight_onoff_onWithTimedOffProcess(zcl_onoff_onWithTimeOffCmd_t *
 	}else{
 		pOnOff->onTime = max2(pOnOff->onTime, cmd->onTime);
 		pOnOff->offWaitTime = cmd->offWaitTime;
-		tuyaLight_onoff(ZCL_CMD_ONOFF_ON);
+		/* Do not route through the public plain-On entry: that would erase the
+		 * just-installed timed-off values and defeat this command. */
+		tuyaLight_onoffApply(ZCL_CMD_ONOFF_ON, FALSE);
 	}
 
 	if((pOnOff->onTime < 0xFFFF) && (pOnOff->offWaitTime < 0xFFFF)){

@@ -28,7 +28,13 @@ extern "C" {
 #define MOES_FLASH_CFG_ADDR            0x0F8000
 #define MOES_FLASH_CFG_MAGIC           {0xEF, 0xFE, 0xED, 0xFE}
 #define MOES_FLASH_TUYA_ID_ADDR        0x0FB000
-#define MOES_FLASH_EUI_ASCII_OFF       0x58    /* "<redacted-device>" */
+/* MOES (build 17): the ASCII EUI-64 lives at +0xB0, not +0x58. Verified
+ * across separate factory blocks. The +0x58 field is a 12-char factory/auth
+ * string; reading 16 chars from there either fails on its NUL (fine) or,
+ * worse, parses when the following bytes happen to be hex - yielding a
+ * wrong but plausible EUI. The correct field has parsed cleanly on every
+ * unit examined. */
+#define MOES_FLASH_EUI_ASCII_OFF       0xB0
 #define MOES_FLASH_EUI_ASCII_LEN       16
 
 typedef struct {
@@ -63,8 +69,9 @@ typedef struct {
 } moes_pinmap_t;
 bool moes_pinmapLookup(u8 jsonPin, moes_pinmap_t *out);
 
-/* Tuya ASCII EUI-64 -> 8 bytes. FALSE if the block is absent or not
- * 16 hex digits. The Telink OUI (a4:c1:38) prefix is asserted. */
+/* Tuya display-order ASCII EUI-64 -> 8 SDK-internal, LSB-first bytes. FALSE
+ * if the block is absent or not 16 hex digits, and leaves ieee unchanged on
+ * failure. The display-order Telink OUI (a4:c1:38) prefix is asserted. */
 bool moes_flashGetIeee(u8 *ieee);
 
 /* The 3-power-cycle reset counter must not count the soft resets the OTA

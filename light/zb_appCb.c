@@ -44,12 +44,12 @@
 #define DEBUG_HEART		0
 
 #if MOES_TS0505B
-/* A light in rescue mode has told us it cannot run its own firmware, so it
- * should be asking for a replacement far more often than the normal 6 hours. */
+/* A recent boot storm asks for an OTA image far more often than the routine
+ * six-hour cadence. This is advisory only: it never changes light behaviour. */
 #define TUYALIGHT_OTA_QUERY_INTERVAL(dflt)	\
 			(moes_rescueActive() ? MOES_RESCUE_OTA_QUERY_SECONDS : (dflt))
 
-/* Delay for the one-shot OTA kick a rescue-latched light gets on join (see
+/* Delay for the one-shot OTA kick a storm-flagged light gets on join (see
  * zbdemo_bdbCommissioningCb). Kept non-zero so the just-completed join can
  * settle before the query frame goes out. */
 #define TUYALIGHT_OTA_JOIN_KICK_DELAY_MS	1000
@@ -84,7 +84,7 @@ ota_callBack_t tuyaLight_otaCb =
 #if MOES_TS0505B
 /* The SDK's periodic OTA-query timer is a single ev_timer_event_t defined in
  * ota.c (otaTimer), not a TL_ZB_TIMER pointer. It is non-static but not
- * declared in ota.h; the rescue-mode join kick below reaches it through this
+ * declared in ota.h; the storm-flag join kick below reaches it through this
  * extern. */
 extern ev_timer_event_t otaTimer;
 #endif
@@ -152,6 +152,13 @@ void zbdemo_bdbInitCb(u8 status, u8 joinedNetwork){
 //	printf("bdbInitCb: sta = %x, joined = %x\n", status, joinedNetwork);
 
 	if(status == BDB_INIT_STATUS_SUCCESS){
+#if MOES_TS0505B
+		/* Build 19: this is the first point at which BDB/ev_timer are known
+		 * ready. Arm every successful BDB boot, including factory-new boots:
+		 * a healthy commissioning scan keeps the cooperative ticker moving,
+		 * while a pre-join timer/scheduler wedge now reaches the hardware fuse. */
+		moes_livenessBooted();
+#endif
 		/*
 		 * start bdb commissioning
 		 * */
@@ -163,12 +170,15 @@ void zbdemo_bdbInitCb(u8 status, u8 joinedNetwork){
 			 * enough to be healthy" clock now. */
 			moes_rescueStableTimerStart();
 
-			/* This boot holds credentials and expects to rejoin: arm the
-			 * rejoin-scan liveness monitor (moes_liveness.h). */
-			moes_livenessBootedOnNetwork();
+			/* The Build 19 BDB-success arm above already covers this rejoin
+			 * boot as well as factory-new commissioning. */
 #endif
 
 #ifdef ZCL_OTA
+			/* Build 18: a storm-flagged light (moes_rescue.h) phones home
+			 * at the rescue cadence instead of the 6 h routine - a light
+			 * that keeps dying gets an OTA shot every cycle. Advisory
+			 * only; the query machinery is identical either way. */
 			ota_queryStart(TUYALIGHT_OTA_QUERY_INTERVAL(MY_OTA_PERIODIC_QUERY_INTERVAL));
 #endif
 		}else{
@@ -237,33 +247,38 @@ void zbdemo_bdbCommissioningCb(u8 status, void *arg){
 			/* Joined. Start (or leave running) the health clock. */
 			moes_rescueStableTimerStart();
 
-			/* No identify blink in rescue mode - light_blink_start() drives
-			 * hwLight_onOffUpdate() on a timer and rescue mode holds a fixed
-			 * output on purpose. */
-			if(!moes_rescueActive())
+			/* Build 18: the join blink always runs - output state is never
+			 * frozen. A storm-flagged light (moes_rescue.h) blinks 5 short
+			 * pulses instead of 2, so a human in the room can tell it
+			 * storm-counted recently without losing a single function. */
 #endif
+#if MOES_TS0505B
+			light_blink_start(moes_rescueActive() ? 5 : 2,
+							  moes_rescueActive() ? 150 : 200,
+							  moes_rescueActive() ? 150 : 200);
+#else
 			light_blink_start(2, 200, 200);
+#endif
 
 #ifdef ZCL_OTA
-	    	ota_queryStart(TUYALIGHT_OTA_QUERY_INTERVAL(OTA_PERIODIC_QUERY_INTERVAL));
+			ota_queryStart(TUYALIGHT_OTA_QUERY_INTERVAL(OTA_PERIODIC_QUERY_INTERVAL));
 
 #if MOES_TS0505B
-	    	if(moes_rescueActive() &&
-	    	   zcl_attr_imageUpgradeStatus == IMAGE_UPGRADE_STATUS_NORMAL){
-	    		/* A rescue-latched light has already told us its own firmware
-	    		 * cannot run. If it rejoins and then wedges again ~90 s later
-	    		 * (boothang_stack.md), a query that waits out the first 10 min
-	    		 * interval never happens - so kick the already-scheduled
-	    		 * periodic query now. ev_on_timer re-arms otaTimer to fire in
-	    		 * TUYALIGHT_OTA_JOIN_KICK_DELAY_MS; ota_periodicQueryServerCb's
-	    		 * return value (seconds * 1000) then restores the normal rescue
-	    		 * interval, so this is a one-shot kick, not a poll-rate change.
-	    		 *
-	    		 * Guarded on IMAGE_UPGRADE_STATUS_NORMAL so a mid-download
-	    		 * rejoin can never re-arm otaTimer while it is being used as an
-	    		 * image-block/countdown wait timer. */
-	    		ev_on_timer(&otaTimer, TUYALIGHT_OTA_JOIN_KICK_DELAY_MS);
-	    	}
+			if(moes_rescueActive() &&
+			   zcl_attr_imageUpgradeStatus == IMAGE_UPGRADE_STATUS_NORMAL){
+				/* A storm-flagged light may be short-lived. If it rejoins and then
+				 * wedges again ~90 s later (boothang_stack.md), a query that waits
+				 * out the first 10 min interval may never happen - so kick the
+				 * already-scheduled periodic query now. ev_on_timer re-arms otaTimer
+				 * to fire in TUYALIGHT_OTA_JOIN_KICK_DELAY_MS; the periodic callback
+				 * then restores the normal storm cadence. This is a one-shot cadence
+				 * adjustment, not a poll-rate change to any other subsystem.
+				 *
+				 * Guarded on IMAGE_UPGRADE_STATUS_NORMAL so a mid-download
+				 * rejoin can never re-arm otaTimer while it is being used as an
+				 * image-block/countdown wait timer. */
+				ev_on_timer(&otaTimer, TUYALIGHT_OTA_JOIN_KICK_DELAY_MS);
+			}
 #endif
 #endif
 

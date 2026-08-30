@@ -14,7 +14,10 @@
 #include "zb_api.h"
 #include "zcl_include.h"
 #include "factory_reset.h"
+#include "moes_eui.h"
 #include "moes_flashcfg.h"
+
+STATIC_ASSERT(MOES_FLASH_EUI_ASCII_LEN == MOES_EUI_ASCII_LEN);
 
 moes_cfg_t g_moesCfg;
 
@@ -74,33 +77,7 @@ bool moes_flashGetIeee(u8 *ieee){
 	flash_read(MOES_FLASH_TUYA_ID_ADDR + MOES_FLASH_EUI_ASCII_OFF,
 			   MOES_FLASH_EUI_ASCII_LEN, ascii);
 
-	for(u8 i = 0; i < MOES_FLASH_EUI_ASCII_LEN; i++){
-		u8 c = ascii[i];
-		u8 nib;
-		if(c >= '0' && c <= '9'){
-			nib = c - '0';
-		}else if(c >= 'a' && c <= 'f'){
-			nib = c - 'a' + 10;
-		}else if(c >= 'A' && c <= 'F'){
-			/* The sampled unit stores this lowercase, but nothing
-			 * guarantees the rest of the deployed fleet does. An uppercase digit used to fail the
-			 * parse, silently fall through to the (invalid on this board)
-			 * binary block at 0x0FF000, and give the light a different IEEE -
-			 * i.e. a brand new device in zigbee2mqtt with dead history. Not a
-			 * brick, but not something to discover across deployed fixtures. */
-			nib = c - 'A' + 10;
-		}else{
-			return FALSE;
-		}
-		if(i & 1){
-			ieee[i >> 1] |= nib;
-		}else{
-			ieee[i >> 1] = nib << 4;
-		}
-	}
-
-	/* sanity: Telink OUI */
-	return (ieee[0] == 0xa4 && ieee[1] == 0xc1 && ieee[2] == 0x38);
+	return moes_euiParseDisplayAscii(ascii, ieee);
 }
 
 /* ------------------------------------------------------------------ */

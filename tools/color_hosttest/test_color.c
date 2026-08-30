@@ -1,0 +1,99 @@
+/* Executes the REAL light/moes_color.c - not a reimplementation of it.
+ *
+ * Build 20 made XY colour commands actually reach the LEDs by converting CIE
+ * xy into the HSV pair the output stage renders. That conversion is integer
+ * arithmetic with a matrix, a divide by y, and clamps: precisely the kind of
+ * code that is easy to get subtly wrong and painful to debug on a ceiling
+ * fixture. These checks pin it down on the host instead. */
+#include <stdio.h>
+#include "../../light/moes_color.h"
+
+static int failures;
+
+#define XY(v) ((unsigned short)((v) * 65536.0))
+
+/* ZCL hue is 0..0xFE across 0..360 degrees. */
+#define DEG(h) ((int)(((long)(h) * 360) / MOES_COLOR_HUE_MAX))
+
+static void check(const char *what, int cond)
+{
+    if (!cond) { printf("  FAIL: %s\n", what); failures++; }
+}
+
+/* Hue is circular: 358 degrees and 2 degrees are 4 apart, not 356. */
+static int hue_delta_deg(int a, int b)
+{
+    int d = a - b;
+    if (d < 0) d = -d;
+    return (d > 180) ? (360 - d) : d;
+}
+
+static void expect_hue(const char *name, double x, double y,
+                       int wantDeg, int tolDeg, int minSat)
+{
+    unsigned char hue = 0xAA, sat = 0xAA;
+    int gotDeg, delta;
+
+    moes_xyToHueSat(XY(x), XY(y), &hue, &sat);
+    gotDeg = DEG(hue);
+    delta  = hue_delta_deg(gotDeg, wantDeg);
+
+    printf("  %-22s xy=(%.4f,%.4f) -> hue=%3u (%3d deg) sat=%3u\n",
+           name, x, y, hue, gotDeg, sat);
+    check(name, delta <= tolDeg);
+    if (sat < minSat) { printf("  FAIL: %s saturation %u < %d\n", name, sat, minSat); failures++; }
+}
+
+int main(void)
+{
+    unsigned char hue, sat;
+    unsigned long x, y;
+
+    printf("=== primaries map to the right hue ===\n");
+    /* sRGB primaries, CIE 1931. Tolerance is generous because the output stage
+     * only has 8-bit hue and the matrix runs in per-mille fixed point. */
+    expect_hue("sRGB red",    0.6400, 0.3300,   0, 20, 200);
+    expect_hue("sRGB green",  0.3000, 0.6000, 120, 20, 200);
+    expect_hue("sRGB blue",   0.1500, 0.0600, 240, 20, 200);
+    /* The exact value Home Assistant sent when the user picked red (19:15:47). */
+    expect_hue("HA red pick", 0.7347, 0.2653,   0, 20, 200);
+
+    printf("=== D65 white is nearly unsaturated ===\n");
+    moes_xyToHueSat(XY(0.3127), XY(0.3290), &hue, &sat);
+    printf("  D65 white              -> hue=%3u sat=%3u\n", hue, sat);
+    check("D65 white must be low saturation", sat < 40);
+
+    printf("=== degenerate inputs must not divide by zero or wrap ===\n");
+    moes_xyToHueSat(0, 0, &hue, &sat);
+    printf("  x=0 y=0                -> hue=%3u sat=%3u\n", hue, sat);
+    check("x=0,y=0 -> achromatic", hue == 0 && sat == 0);
+
+    moes_xyToHueSat(XY(0.5), 0, &hue, &sat);
+    printf("  y=0                    -> hue=%3u sat=%3u\n", hue, sat);
+    check("y=0 -> achromatic", hue == 0 && sat == 0);
+
+    moes_xyToHueSat(0xFFFF, 0xFFFF, &hue, &sat);
+    printf("  x=y=0xFFFF             -> hue=%3u sat=%3u\n", hue, sat);
+    check("x=y=max stays in range", hue <= MOES_COLOR_HUE_MAX && sat <= MOES_COLOR_SAT_MAX);
+
+    printf("=== exhaustive sweep: outputs always in ZCL range ===\n");
+    /* Every command that can arrive over the air, at 257-step resolution.
+     * Guards against overflow in the matrix and a hue that wraps past 0xFE. */
+    for (x = 0; x <= 0xFFFF; x += 257) {
+        for (y = 0; y <= 0xFFFF; y += 257) {
+            hue = 0xFF; sat = 0xFF;
+            moes_xyToHueSat((unsigned short)x, (unsigned short)y, &hue, &sat);
+            if (hue > MOES_COLOR_HUE_MAX || sat > MOES_COLOR_SAT_MAX) {
+                printf("  FAIL: xy=(%lu,%lu) -> hue=%u sat=%u out of range\n", x, y, hue, sat);
+                failures++;
+                goto done;
+            }
+        }
+    }
+    printf("  65536 combinations, all within 0..%u\n", MOES_COLOR_HUE_MAX);
+done:
+
+    if (failures) { printf("\n%d FAILING check(s)\n", failures); return 1; }
+    printf("\nall colour conversion checks passed (real moes_color.c)\n");
+    return 0;
+}

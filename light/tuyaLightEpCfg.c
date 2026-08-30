@@ -341,6 +341,10 @@ zcl_lightColorCtrlAttr_t g_zcl_colorCtrlAttrs =
 #if COLOR_RGB_SUPPORT
 	.currentHue						= 0x00,
 	.currentSaturation				= 0x00,
+	/* No XY command has been received at boot. Once MoveToColor arrives,
+	 * zcl_colorCtrlCb.c maintains these fields for truthful reads/reports. */
+	.currentX						= 0x0000,
+	.currentY						= 0x0000,
 	.colorLoopActive				= 0x00,
 	.colorLoopDirection				= 0x00,
 	.colorLoopTime					= 0x0019,
@@ -366,6 +370,11 @@ const zclAttrInfo_t lightColorCtrl_attrTbl[] =
 #if COLOR_RGB_SUPPORT
     { ZCL_ATTRID_CURRENT_HUE,             			ZCL_DATA_TYPE_UINT8,   	ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.currentHue },
     { ZCL_ATTRID_CURRENT_SATURATION,      			ZCL_DATA_TYPE_UINT8,   	ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.currentSaturation },
+    /* z2m's tuyaLight colour interview reads and configures reporting for
+     * these advertised XY attributes. Do not remove the backing fields: an
+     * unsupported read makes an extended-colour light fail its interview. */
+    { ZCL_ATTRID_CURRENT_X,               			ZCL_DATA_TYPE_UINT16,  	ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.currentX },
+    { ZCL_ATTRID_CURRENT_Y,               			ZCL_DATA_TYPE_UINT16,  	ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.currentY },
     { ZCL_ATTRID_COLOR_LOOP_ACTIVE,       			ZCL_DATA_TYPE_UINT8,    ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.colorLoopActive },
     { ZCL_ATTRID_COLOR_LOOP_DIRECTION,    			ZCL_DATA_TYPE_UINT8,    ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.colorLoopDirection },
     { ZCL_ATTRID_COLOR_LOOP_TIME,         			ZCL_DATA_TYPE_UINT16,   ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_colorCtrlAttrs.colorLoopTime },
@@ -464,6 +473,8 @@ nv_sts_t zcl_onOffAttr_save(void)
 	st = nv_flashReadNew(1, NV_MODULE_ZCL,  NV_ITEM_ZCL_ON_OFF, sizeof(zcl_nv_onOff_t), (u8*)&zcl_nv_onOff);
 
 	if(st == NV_SUCC){
+		/* OnTime and OffWaitTime are deliberately absent from zcl_nv_onOff_t:
+		 * On-With-Timed-Off is an in-flight transaction, never boot state. */
 		if((zcl_nv_onOff.onOff != g_zcl_onOffAttrs.onOff) || (zcl_nv_onOff.startUpOnOff != g_zcl_onOffAttrs.startUpOnOff)){
 			zcl_nv_onOff.onOff = g_zcl_onOffAttrs.onOff;
 			zcl_nv_onOff.startUpOnOff = g_zcl_onOffAttrs.startUpOnOff;
@@ -504,6 +515,8 @@ nv_sts_t zcl_onOffAttr_restore(void)
 	st = nv_flashReadNew(1, NV_MODULE_ZCL,  NV_ITEM_ZCL_ON_OFF, sizeof(zcl_nv_onOff_t), (u8*)&zcl_nv_onOff);
 
 	if(st == NV_SUCC){
+		/* See save(): only persistent OnOff and StartUpOnOff are restored.
+		 * Timed-off countdown values remain the zero-initialised RAM defaults. */
 		g_zcl_onOffAttrs.onOff = zcl_nv_onOff.onOff;
 		g_zcl_onOffAttrs.startUpOnOff = zcl_nv_onOff.startUpOnOff;
 	}

@@ -24,7 +24,7 @@
 #include "tuyaLightCtrl.h"
 #include "moes_flashcfg.h"
 #include "light_effects.h"
-#include "moes_rescue.h"
+#include "moes_color.h"
 
 
 /**********************************************************************
@@ -290,6 +290,24 @@ void hsvToRGB(u8 hue, u8 saturation, u8 level, u8 *R, u8 *G, u8 *B)
 }
 
 /*********************************************************************
+ * @fn      xyToHueSat
+ *
+ * @brief   Thin wrapper over the standalone, host-tested colour maths in
+ *          moes_color.c. The conversion lives there so tools/color_hosttest
+ *          executes the same code this firmware runs, rather than a copy.
+ */
+void xyToHueSat(u16 x, u16 y, u8 *hue, u8 *saturation)
+{
+	/* moes_color.h cannot include the ZCL headers without losing its
+	 * host-testability, so prove here that its scale constants still match the
+	 * ZCL ones the rest of the output stage uses. */
+	STATIC_ASSERT(MOES_COLOR_HUE_MAX == ZCL_COLOR_ATTR_HUE_MAX);
+	STATIC_ASSERT(MOES_COLOR_SAT_MAX == ZCL_COLOR_ATTR_SATURATION_MAX);
+
+	moes_xyToHueSat(x, y, hue, saturation);
+}
+
+/*********************************************************************
  * @fn      hwLight_colorUpdate_HSV2RGB
  */
 void hwLight_colorUpdate_HSV2RGB(u8 hue, u8 saturation, u8 level)
@@ -335,22 +353,6 @@ void light_fresh(void)
 	if(inLightFresh >= 2){
 		return;
 	}
-
-#if MOES_TS0505B
-	/* Rescue mode owns the output stage. This is the single choke point for
-	 * every ZCL-driven update - on/off, level, hue, saturation, colour
-	 * temperature, scene recall - so blocking it here is what makes the claim
-	 * in FALLBACK_DESIGN.md S2 true: in rescue mode the output is written
-	 * exactly once, at boot, and never again. Otherwise a "turn on" from
-	 * zigbee2mqtt would walk straight back into the colour path, which is
-	 * precisely the code rescue mode exists not to depend on.
-	 *
-	 * The ZCL attributes still update normally - reads and reports are
-	 * truthful, the light simply does not act on them. */
-	if(moes_rescueActive()){
-		return;
-	}
-#endif
 
 	inLightFresh++;
 
@@ -478,15 +480,6 @@ void light_blink_start(u8 times, u16 ledOnTime, u16 ledOffTime)
 {
 	u32 interval = 0;
 	zcl_onOffAttr_t *pOnoff = zcl_onoffAttrGet();
-
-#if MOES_TS0505B
-	/* Identify would schedule a timer and drive hwLight_onOffUpdate() behind
-	 * light_fresh()'s back. In rescue mode the steady dim-white output *is*
-	 * the diagnostic, so keep it steady. */
-	if(moes_rescueActive()){
-		return;
-	}
-#endif
 
 	gLightCtx.oriSta = pOnoff->onOff;
 	gLightCtx.times = times;

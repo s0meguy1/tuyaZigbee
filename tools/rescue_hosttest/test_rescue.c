@@ -32,17 +32,31 @@
 /* Simulated NV                                                        */
 
 #define SIM_NV_ITEM_PROBATION   0x71
+#define SIM_NV_ITEM_YOUNG       0x72
 
 static int  nv_present;          /* has the item ever been written? */
 static u8   nv_value;
-static int  nv_writes;           /* flash-wear counter for the whole run */
+static int  nv_youngPresent;     /* the build-18 boot "young" marker */
+static u8   nv_youngValue;
+static int  nv_writes;           /* probation-item flash writes */
+static int  nv_youngWrites;      /* marker-item flash writes */
 static int  nv_readFails;        /* force reads to fail */
 static int  nv_writeFails;       /* force writes to fail */
 
 nv_sts_t nv_flashReadNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 {
 	(void)single; (void)len;
-	if(id != NV_MODULE_APP || itemId != SIM_NV_ITEM_PROBATION){
+	if(id != NV_MODULE_APP){
+		return NV_ITEM_NOT_FOUND;
+	}
+	if(itemId == SIM_NV_ITEM_YOUNG){
+		if(nv_readFails || !nv_youngPresent){
+			return NV_ITEM_NOT_FOUND;
+		}
+		*buf = nv_youngValue;
+		return NV_SUCC;
+	}
+	if(itemId != SIM_NV_ITEM_PROBATION){
 		return NV_ITEM_NOT_FOUND;
 	}
 	if(nv_readFails || !nv_present){
@@ -55,7 +69,19 @@ nv_sts_t nv_flashReadNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 nv_sts_t nv_flashWriteNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 {
 	(void)single; (void)len;
-	if(id != NV_MODULE_APP || itemId != SIM_NV_ITEM_PROBATION){
+	if(id != NV_MODULE_APP){
+		return NV_ITEM_NOT_FOUND;
+	}
+	if(itemId == SIM_NV_ITEM_YOUNG){
+		nv_youngWrites++;
+		if(nv_writeFails){
+			return NV_ITEM_NOT_FOUND;
+		}
+		nv_youngPresent = 1;
+		nv_youngValue = *buf;
+		return NV_SUCC;
+	}
+	if(itemId != SIM_NV_ITEM_PROBATION){
 		return NV_ITEM_NOT_FOUND;
 	}
 	nv_writes++;
@@ -78,7 +104,7 @@ bool zb_isDeviceJoinedNwk(void){ return joined ? TRUE : FALSE; }
  * test own one each (rescue's minute clock, liveness' progress ticker). Four
  * slots is plenty. host_wedge() freezes this whole list, which is the honest
  * model of "an earlier ev_timer callback never returns, or ev_poll is stuck". */
-#define SIM_TIMER_SLOTS 4
+#define SIM_TIMER_SLOTS 5
 
 struct ev_timer_event_s { int live; };
 
@@ -86,13 +112,14 @@ static struct {
 	ev_timer_event_t      evt;
 	ev_timer_callback_t   cb;
 	int                   live;
+	u32                   ms;   /* period, for the fast/slow tick split below */
 } sim_timers[SIM_TIMER_SLOTS];
 
 static int timer_allocFails;
 
 ev_timer_event_t *host_timerSchedule(ev_timer_callback_t cb, void *arg, u32 ms)
 {
-	(void)arg; (void)ms;
+	(void)arg;
 	if(timer_allocFails){
 		return NULL;            /* the pool was full */
 	}
@@ -101,10 +128,26 @@ ev_timer_event_t *host_timerSchedule(ev_timer_callback_t cb, void *arg, u32 ms)
 			sim_timers[i].live = 1;
 			sim_timers[i].evt.live = 1;
 			sim_timers[i].cb = cb;
+			sim_timers[i].ms = ms;
 			return &sim_timers[i].evt;
 		}
 	}
 	return NULL;
+}
+
+void host_timerCancel(ev_timer_event_t **evt)
+{
+	if(!evt || !*evt){
+		return;
+	}
+	for(int i = 0; i < SIM_TIMER_SLOTS; i++){
+		if(&sim_timers[i].evt == *evt){
+			sim_timers[i].live = 0;
+			sim_timers[i].evt.live = 0;
+			sim_timers[i].cb = 0;
+		}
+	}
+	*evt = NULL;
 }
 
 static int sim_timerCount(void)
@@ -240,6 +283,27 @@ static void tick_all(int n)
 	}
 }
 
+/* Fast-cadence-only variant: fires just the sub-minute timers (the liveness
+ * machinery). The build-18 60 s grown-up marker timer must NOT fire during a
+ * scenario's "seconds on air" phase - a boot that dies at 14 s leaves its
+ * young marker set, which is exactly what the next boot needs to see. */
+static void tick_fast(int n)
+{
+	for(int step = 0; step < n; step++){
+		if(task_wedged){
+			return;
+		}
+		for(int i = 0; i < SIM_TIMER_SLOTS; i++){
+			if(sim_timers[i].live && sim_timers[i].cb && sim_timers[i].ms < 60000){
+				if(sim_timers[i].cb(NULL) < 0){
+					sim_timers[i].live = 0;
+					sim_timers[i].evt.live = 0;
+				}
+			}
+		}
+	}
+}
+
 /* Advance every live hardware timer one firing, n times. This list is immune to
  * host_wedge(), matching drv_hwTmr's independence from ev_main. */
 static void tick_hw_all(int n)
@@ -263,6 +327,15 @@ static void tick_both(int n)
 {
 	for(int step = 0; step < n; step++){
 		tick_all(1);
+		tick_hw_all(1);
+	}
+}
+
+/* Seconds-on-air variant that also must not age the 60 s marker timer. */
+static void tick_fast_both(int n)
+{
+	for(int step = 0; step < n; step++){
+		tick_fast(1);
 		tick_hw_all(1);
 	}
 }
@@ -332,46 +405,67 @@ static void sim_reset_sim(void)
 
 static void t_fresh_device(void)
 {
-	printf("  fresh device: first boot is normal and records one failure\n");
-	nv_present = 0; nv_writes = 0;
+	printf("  fresh device: first boot is calm, records nothing, marks young\n");
+	nv_present = 0; nv_youngPresent = 0; nv_writes = 0;
 
 	sim_powerOn();
 
 	CHECK(moes_rescueActive() == FALSE, "a fresh device must boot normally");
-	CHECK(moes_rescueFailCount() == 1, "count should be 1, got %d", moes_rescueFailCount());
-	CHECK(nv_present && nv_value == 1, "NV should hold 1, holds %d (present=%d)", nv_value, nv_present);
-	CHECK(nv_writes == 1, "exactly one NV write per boot, got %d", nv_writes);
+	CHECK(moes_rescueFailCount() == 0, "count should be 0, got %d", moes_rescueFailCount());
+	CHECK(!nv_present, "no probation write should happen (present=%d)", nv_present);
+	CHECK(nv_youngPresent && nv_youngValue == 1, "the young marker must be written");
+	CHECK(nv_writes == 0 && nv_youngWrites == 1, "marker-only write (p=%d y=%d)", nv_writes, nv_youngWrites);
 }
 
-static void t_latch_boundary(int storedCount, int expectRescue, int expectWrites)
+/* Build 18: a boot only counts when it inherits a still-young predecessor
+ * (a rapid-cycling storm). Stored count alone never builds. */
+static void t_storm_boundary(int storedCount, int expectRescue)
 {
-	printf("  boot with stored count %d: rescue=%d, writes=%d\n",
-		   storedCount, expectRescue, expectWrites);
-	nv_present = 1; nv_value = (u8)storedCount; nv_writes = 0;
+	printf("  storm boot with stored count %d: flag=%d\n", storedCount, expectRescue);
+	nv_present = 1; nv_value = (u8)storedCount;
+	nv_youngPresent = 1; nv_youngValue = 1;
+	nv_writes = 0;
 
 	sim_powerOn();
 
 	CHECK(moes_rescueActive() == (expectRescue ? TRUE : FALSE),
-		  "rescue should be %d", expectRescue);
-	CHECK(nv_writes == expectWrites,
-		  "expected %d NV writes, got %d", expectWrites, nv_writes);
+		  "advisory flag should be %d", expectRescue);
+	CHECK(nv_writes == (storedCount < MOES_RESCUE_FAIL_THRESHOLD ? 1 : 0),
+		  "probation write only while below cap, got %d", nv_writes);
+	CHECK(nv_youngWrites == 1, "marker write, got %d", nv_youngWrites);
 }
 
-static void t_below_threshold(void){ t_latch_boundary(MOES_RESCUE_FAIL_THRESHOLD - 1, 0, 1); }
-static void t_at_threshold(void)   { t_latch_boundary(MOES_RESCUE_FAIL_THRESHOLD,     1, 0); }
-static void t_above_threshold(void){ t_latch_boundary(MOES_RESCUE_FAIL_THRESHOLD + 5, 1, 0); }
+static void t_below_threshold(void){ t_storm_boundary(MOES_RESCUE_FAIL_THRESHOLD - 2, 0); }
+static void t_at_threshold(void)   { t_storm_boundary(MOES_RESCUE_FAIL_THRESHOLD - 1, 1); }
+static void t_above_threshold(void){ t_storm_boundary(MOES_RESCUE_FAIL_THRESHOLD + 5, 1); }
+
+static void t_calm_boot_wipes(void)
+{
+	printf("  a boot whose predecessor grew up wipes the history\n");
+	nv_present = 1; nv_value = MOES_RESCUE_FAIL_THRESHOLD - 1;
+	nv_youngPresent = 1; nv_youngValue = 0;      /* grown-up predecessor */
+	nv_writes = 0;
+
+	sim_powerOn();
+
+	CHECK(moes_rescueActive() == FALSE, "a routine power event must never flag");
+	CHECK(moes_rescueFailCount() == 0, "count should be wiped, got %d", moes_rescueFailCount());
+	CHECK(nv_value == 0, "the wipe must persist, NV holds %d", nv_value);
+	CHECK(nv_youngValue == 1, "this boot marks itself young");
+}
 
 static void t_stable_clears(void)
 {
 	printf("  joined + continuous progress for the full window clears the counter\n");
 	nv_present = 1; nv_value = 3; nv_writes = 0; sim_reset_sim();
+	nv_youngPresent = 1; nv_youngValue = 1;      /* storm boot: 3 -> 4 */
 
 	sim_powerOn();
 	CHECK(moes_rescueFailCount() == 4, "count should be 4, got %d", moes_rescueFailCount());
 	nv_writes = 0;
 
 	joined = 1;
-	moes_livenessBootedOnNetwork();       /* arms the progress ticker */
+	moes_livenessBooted();                /* BDB init success arms every boot */
 	moes_rescueStableTimerStart();
 	CHECK(sim_anyTimerLive(), "the stable timer should be running");
 
@@ -398,10 +492,11 @@ static void t_dropping_off_restarts_the_clock(void)
 {
 	printf("  falling off the network restarts the clock, it does not pause it\n");
 	nv_present = 1; nv_value = 2; nv_writes = 0; sim_reset_sim();
+	nv_youngPresent = 1; nv_youngValue = 1;      /* storm boot: 2 -> 3 */
 
-	sim_powerOn();                       /* count 2 -> 3 */
+	sim_powerOn();
 	joined = 1;
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	moes_rescueStableTimerStart();
 
 	tick_both(MOES_RESCUE_STABLE_MINUTES - 2);   /* 18 healthy -> s_minsLeft 2 */
@@ -422,6 +517,7 @@ static void t_gesture_clears(void)
 {
 	printf("  a completed 3-power-cycle gesture clears the counter\n");
 	nv_present = 1; nv_value = 4; nv_writes = 0; sim_reset_sim();
+	nv_youngPresent = 1; nv_youngValue = 1;      /* storm boot: 4 -> 5 */
 
 	sim_powerOn();
 	CHECK(moes_rescueFailCount() == 5, "count should be 5, got %d", moes_rescueFailCount());
@@ -450,38 +546,40 @@ static void t_pairing_gesture_cannot_latch(void)
 
 static void t_garbage_nv_is_failsafe(void)
 {
-	printf("  garbage NV fails safe (towards rescue, never towards a reset)\n");
+	printf("  garbage NV fails safe (towards the advisory flag, never a reset)\n");
 	nv_present = 1; nv_value = 0xFF; nv_writes = 0;
+	nv_youngPresent = 1; nv_youngValue = 0xFF;  /* garbage reads as young */
 
 	sim_powerOn();
 
-	CHECK(moes_rescueActive() == TRUE, "0xFF must clamp into rescue, not wrap");
+	CHECK(moes_rescueActive() == TRUE, "0xFF must clamp into the flag, not wrap");
 	CHECK(moes_rescueFailCount() == MOES_RESCUE_FAIL_THRESHOLD,
 		  "clamped to the threshold, got %d", moes_rescueFailCount());
-	CHECK(nv_writes == 0, "a latching boot must not write flash, got %d", nv_writes);
+	CHECK(nv_writes == 0 && nv_youngWrites == 1, "marker-only (p=%d y=%d)", nv_writes, nv_youngWrites);
 }
 
 static void t_unreadable_nv(void)
 {
 	printf("  an unreadable counter is treated as zero, not as garbage\n");
 	nv_present = 1; nv_value = 200; nv_readFails = 1; nv_writes = 0;
+	nv_youngPresent = 1; nv_youngValue = 1;
 
 	sim_powerOn();
 
-	CHECK(moes_rescueActive() == FALSE, "read failure must not latch rescue");
-	CHECK(moes_rescueFailCount() == 1, "count should be 1, got %d", moes_rescueFailCount());
+	CHECK(moes_rescueActive() == FALSE, "read failure must not set the flag");
+	CHECK(moes_rescueFailCount() == 0, "count should be 0, got %d", moes_rescueFailCount());
 	nv_readFails = 0;
 }
 
 static void t_unwritable_nv(void)
 {
-	printf("  an unwritable counter degrades to today's behaviour, no crash\n");
+	printf("  an unwritable marker degrades gracefully, no crash\n");
 	nv_present = 0; nv_writeFails = 1; nv_writes = 0;
 
 	sim_powerOn();
 
 	CHECK(moes_rescueActive() == FALSE, "must still boot");
-	CHECK(nv_writes == 1, "it must still try once, got %d", nv_writes);
+	CHECK(nv_youngWrites == 1, "it must still try the marker once, got %d", nv_youngWrites);
 	nv_writeFails = 0;
 }
 
@@ -489,6 +587,7 @@ static void t_timer_pool_exhausted(void)
 {
 	printf("  no free TL_ZB_TIMER just means this boot does not clear\n");
 	nv_present = 1; nv_value = 2; sim_reset_sim(); timer_allocFails = 1;
+	nv_youngPresent = 1; nv_youngValue = 1;      /* storm boot: 2 -> 3 */
 
 	sim_powerOn();
 	joined = 1;
@@ -502,28 +601,41 @@ static void t_no_timer_when_nothing_to_clear(void)
 {
 	printf("  a healthy light does not burn a timer slot it does not need\n");
 	nv_present = 1; nv_value = 0; sim_reset_sim();
+	nv_youngPresent = 1; nv_youngValue = 0;      /* calm boot, count stays 0 */
 
 	sim_powerOn();
-	/* count is now 1, so the timer IS wanted */
 	joined = 1;
 	moes_rescueStableTimerStart();
-	CHECK(sim_anyTimerLive(), "count is 1, the clock should run");
+	/* The young-marker timer is always live (build 18); what a healthy light
+	 * must NOT run is the stable clock on top of it. */
+	CHECK(sim_timerCount() == 1, "marker timer only, got %d", sim_timerCount());
+
+	/* A storm-counted light DOES want the stable clock - exactly one more. */
+	nv_present = 1; nv_value = 1; nv_youngPresent = 1; nv_youngValue = 1;
+	sim_powerOn();                               /* storm: 1 -> 2 */
+	joined = 1;
+	moes_rescueStableTimerStart();
+	CHECK(sim_timerCount() == 2, "marker + stable clock, got %d", sim_timerCount());
 
 	/* and it is idempotent */
 	moes_rescueStableTimerStart();
-	CHECK(sim_timerCount() == 1, "still exactly one timer");
+	CHECK(sim_timerCount() == 2, "still exactly two timers");
 }
 
 static void t_flash_wear_bound(void)
 {
 	printf("  a permanent reset loop writes flash a bounded number of times\n");
-	/* Model 200 consecutive unstable boots by carrying nv_value across
-	 * fork()ed children - each child is one power-on. */
+	/* Model 200 consecutive storm boots by carrying both NV items across
+	 * fork()ed children - each child is one power-on. Every boot writes
+	 * its young marker (1 byte); probation writes stop at the cap. */
 	nv_present = 0; nv_value = 0; nv_writes = 0;
+	nv_youngPresent = 0; nv_youngValue = 0;
 
 	int totalWrites = 0;
 	u8  carried = 0;
+	u8  carriedYoung = 0;
 	int carriedPresent = 0;
+	int carriedYoungPresent = 0;
 
 	for(int boot = 0; boot < 200; boot++){
 		int pipefd[2];
@@ -532,39 +644,49 @@ static void t_flash_wear_bound(void)
 		pid_t pid = fork();
 		if(pid == 0){
 			close(pipefd[0]);
-			nv_present = carriedPresent; nv_value = carried; nv_writes = 0;
+			nv_present = carriedPresent; nv_value = carried; nv_writes = 0; nv_youngWrites = 0;
+			nv_youngPresent = carriedYoungPresent; nv_youngValue = carriedYoung;
 			sim_powerOn();
-			u8 out[3] = { (u8)nv_writes, nv_value, (u8)nv_present };
-			ssize_t w = write(pipefd[1], out, 3);
+			u8 out[5] = { (u8)(nv_writes + nv_youngWrites), nv_value, (u8)nv_present, nv_youngValue, (u8)nv_youngPresent };
+			ssize_t w = write(pipefd[1], out, 5);
 			(void)w;
 			close(pipefd[1]);
 			_exit(0);
 		}
 		close(pipefd[1]);
-		u8 in[3] = {0,0,0};
-		ssize_t r = read(pipefd[0], in, 3);
+		u8 in[5] = {0,0,0,0,0};
+		ssize_t r = read(pipefd[0], in, 5);
 		(void)r;
 		close(pipefd[0]);
 		waitpid(pid, NULL, 0);
 
-		totalWrites   += in[0];
-		carried        = in[1];
-		carriedPresent = in[2];
+		totalWrites          += in[0];
+		carried               = in[1];
+		carriedPresent        = in[2];
+		carriedYoung          = in[3];
+		carriedYoungPresent   = in[4];
 	}
 
-	printf("        200 unstable boots -> %d NV writes, final count %d\n", totalWrites, carried);
-	CHECK(totalWrites == MOES_RESCUE_FAIL_THRESHOLD,
-		  "expected exactly %d writes over 200 boots, got %d",
-		  MOES_RESCUE_FAIL_THRESHOLD, totalWrites);
+	printf("        200 storm boots -> %d NV writes, final count %d\n", totalWrites, carried);
+	CHECK(totalWrites == 200 + MOES_RESCUE_FAIL_THRESHOLD,
+		  "expected %d writes (marker x200 + probation x%d), got %d",
+		  200 + MOES_RESCUE_FAIL_THRESHOLD, MOES_RESCUE_FAIL_THRESHOLD, totalWrites);
 	CHECK(carried == MOES_RESCUE_FAIL_THRESHOLD,
 		  "counter should have parked at the threshold, got %d", carried);
+	CHECK(carriedYoungPresent && carriedYoung == 1,
+		  "the young marker stays set through the storm");
 }
 
 static void t_latch_after_threshold_boots(void)
 {
-	printf("  N consecutive unstable boots latch rescue on boot N+1\n");
+	printf("  N consecutive storm boots set the advisory flag on boot N+1\n");
+	/* Boot 1 on a fresh device is calm (no young marker to inherit); every
+	 * later storm boot inherits young=1 and counts. The flag therefore
+	 * appears on boot THRESHOLD+1, the boot that increments to the cap. */
 	u8  carried = 0;
+	u8  carriedYoung = 0;
 	int carriedPresent = 0;
+	int carriedYoungPresent = 0;
 	int firstRescueBoot = -1;
 
 	for(int boot = 1; boot <= MOES_RESCUE_FAIL_THRESHOLD + 3; boot++){
@@ -574,8 +696,9 @@ static void t_latch_after_threshold_boots(void)
 		if(pid == 0){
 			close(pipefd[0]);
 			nv_present = carriedPresent; nv_value = carried;
+			nv_youngPresent = carriedYoungPresent; nv_youngValue = carriedYoung;
 			sim_powerOn();
-			u8 out[3] = { (u8)(moes_rescueActive() ? 1 : 0), nv_value, (u8)nv_present };
+			u8 out[3] = { (u8)(moes_rescueActive() ? 1 : 0), nv_value, nv_youngValue };
 			ssize_t w = write(pipefd[1], out, 3); (void)w;
 			close(pipefd[1]);
 			_exit(0);
@@ -589,35 +712,38 @@ static void t_latch_after_threshold_boots(void)
 		if(in[0] && firstRescueBoot < 0){
 			firstRescueBoot = boot;
 		}
-		carried = in[1]; carriedPresent = in[2];
+		carried = in[1]; carriedYoung = in[2];
+		carriedPresent = carriedYoungPresent = 1;
 	}
 
-	printf("        first rescue boot: #%d (threshold %d)\n",
+	printf("        first flagged boot: #%d (threshold %d)\n",
 		   firstRescueBoot, MOES_RESCUE_FAIL_THRESHOLD);
 	CHECK(firstRescueBoot == MOES_RESCUE_FAIL_THRESHOLD + 1,
-		  "expected rescue on boot %d, got %d",
+		  "expected the flag on boot %d, got %d",
 		  MOES_RESCUE_FAIL_THRESHOLD + 1, firstRescueBoot);
 }
 
 static void t_watchdog_hang_chain(void)
 {
-	printf("  hang -> watchdog reboot -> probation -> rescue -> stable clear\n");
+	printf("  hang -> watchdog reboot -> probation -> flag -> stable clear\n");
 
-	/* 1. A watchdog reboot increments the counter exactly like any other
-	 * un-clean boot. */
+	/* 1. A single watchdog boot on a fresh device is calm: it has no young
+	 * marker to inherit, records no probation, and only marks itself. */
 	nv_present = 0; nv_writes = 0;
 	sim_watchdogBoot();
 	CHECK(moes_rescueActive() == FALSE, "first watchdog boot must be normal");
-	CHECK(moes_rescueFailCount() == 1, "watchdog boot must count 1, got %d",
+	CHECK(moes_rescueFailCount() == 0, "an isolated boot counts nothing, got %d",
 		  moes_rescueFailCount());
-	CHECK(nv_present && nv_value == 1, "watchdog boot must persist 1");
-	CHECK(nv_writes == 1, "watchdog boot must write once, got %d", nv_writes);
+	CHECK(!nv_present, "no probation write");
+	CHECK(nv_youngPresent && nv_youngValue == 1, "it marks itself young");
+	CHECK(nv_writes == 0 && nv_youngWrites == 1, "marker-only write (p=%d y=%d)", nv_writes, nv_youngWrites);
 
-	/* 2. Six consecutive watchdog boots drive the counter to the threshold,
-	 * and the next watchdog boot reads that value and latches rescue. Same
-	 * N -> latch-on-boot-N+1 shape as moes_rescue.c:63-73. */
+	/* 2. Six consecutive young-inheriting boots drive the counter to the
+	 * threshold; the boot that increments to the cap sets the flag. */
 	u8  carried = 0;
+	u8  carriedYoung = 0;
 	int carriedPresent = 0;
+	int carriedYoungPresent = 0;
 	int firstRescueBoot = -1;
 
 	for(int boot = 1; boot <= MOES_RESCUE_FAIL_THRESHOLD + 1; boot++){
@@ -627,12 +753,13 @@ static void t_watchdog_hang_chain(void)
 		pid_t pid = fork();
 		if(pid == 0){
 			close(pipefd[0]);
-			nv_present = carriedPresent; nv_value = carried; nv_writes = 0;
+			nv_present = carriedPresent; nv_value = carried;
+			nv_youngPresent = carriedYoungPresent; nv_youngValue = carriedYoung;
 			sim_watchdogBoot();
 			u8 out[3] = {
 				(u8)(moes_rescueActive() ? 1 : 0),
 				nv_value,
-				(u8)nv_present
+				nv_youngValue
 			};
 			ssize_t w = write(pipefd[1], out, 3); (void)w;
 			close(pipefd[1]);
@@ -648,28 +775,28 @@ static void t_watchdog_hang_chain(void)
 			firstRescueBoot = boot;
 		}
 		if(boot <= MOES_RESCUE_FAIL_THRESHOLD){
-			CHECK(!in[0], "watchdog boot %d must not latch rescue yet", boot);
+			CHECK(!in[0], "watchdog boot %d must not set the flag yet", boot);
 		}
-		if(boot == MOES_RESCUE_FAIL_THRESHOLD){
+		if(boot == MOES_RESCUE_FAIL_THRESHOLD + 1){
 			CHECK(in[1] == MOES_RESCUE_FAIL_THRESHOLD,
-				  "six watchdog boots must reach the threshold, got %d", in[1]);
+				  "the streak must reach the threshold, got %d", in[1]);
 		}
 		carried        = in[1];
-		carriedPresent = in[2];
+		carriedYoung   = in[2];
+		carriedPresent = carriedYoungPresent = 1;
 	}
 
 	CHECK(firstRescueBoot == MOES_RESCUE_FAIL_THRESHOLD + 1,
-		  "watchdog streak must latch rescue on boot %d, got %d",
+		  "watchdog streak must set the flag on boot %d, got %d",
 		  MOES_RESCUE_FAIL_THRESHOLD + 1, firstRescueBoot);
 	CHECK(carried == MOES_RESCUE_FAIL_THRESHOLD,
 		  "counter must park at the threshold, got %d", carried);
 
 	/* 3. A joined-and-healthy run still clears probation after the streak
 	 * parked the counter at the threshold. This is the path a recovered light
-	 * takes: counter==threshold latches rescue on this boot, the joined
-	 * callbacks start the stable clock anyway, and a full healthy window (now
-	 * 20 minutes of joined + progress plus the one-minute confirmation) calls
-	 * moes_rescueClear(). */
+	 * takes: the flag is set on this boot, the joined callbacks start the
+	 * stable clock anyway, and a full healthy window (20 minutes of joined +
+	 * progress plus the one-minute confirmation) calls moes_rescueClear(). */
 	{
 		int pipefd[2];
 		if(pipe(pipefd) != 0){ CHECK(0, "pipe() failed"); return; }
@@ -678,13 +805,14 @@ static void t_watchdog_hang_chain(void)
 		if(pid == 0){
 			close(pipefd[0]);
 			nv_present = carriedPresent; nv_value = carried; nv_writes = 0;
+			nv_youngPresent = 1; nv_youngValue = 1;   /* storm boot: capped, flagged */
 			sim_reset_sim();
 			sim_watchdogBoot();
 
 			u8 out[6];
 			out[0] = (u8)(moes_rescueActive() ? 1 : 0);
 			joined = 1;
-			moes_livenessBootedOnNetwork();   /* progress ticker for the clear gate */
+			moes_livenessBooted();            /* BDB-success ticker for the clear gate */
 			moes_rescueStableTimerStart();
 			out[1] = (u8)(sim_anyTimerLive() ? 1 : 0);
 			tick_both(MOES_RESCUE_STABLE_MINUTES + 2);   /* 20 + confirm + spare */
@@ -703,8 +831,8 @@ static void t_watchdog_hang_chain(void)
 		close(pipefd[0]);
 		waitpid(pid, NULL, 0);
 
-		CHECK(in[0] == 1, "a boot at the threshold must latch rescue");
-		CHECK(in[1] == 1, "the stable clock must run while in rescue mode");
+		CHECK(in[0] == 1, "a boot at the threshold must set the flag");
+		CHECK(in[1] == 1, "the stable clock must run while flagged");
 		CHECK(in[2] == 0, "healthy run must clear the count, got %d", in[2]);
 		CHECK(in[3] == 0, "NV should hold 0, holds %d", in[3]);
 		CHECK(in[4] == 1, "exactly one clearing write, got %d", in[4]);
@@ -722,7 +850,7 @@ static void t_wedge_silence_forces_reset(void)
 	printf("  class-1 wedge (unjoined, ev_timer stuck) forces an unmarked reset at the fuse\n");
 	sim_reset_sim();
 
-	moes_livenessBootedOnNetwork();       /* bdbInitCb: joinedNetwork == 1 */
+	moes_livenessBooted();                /* BDB init success, still unjoined */
 	CHECK(sim_anyTimerLive(), "arming must start the progress ticker");
 	CHECK(hw_anyTimerLive(), "arming must start the hw sampler");
 
@@ -740,7 +868,7 @@ static void t_hw_sample_callback_explicitly_rearms(void)
 	printf("  each hw sample explicitly reloads Timer0 (stop -> init -> capture -> start)\n");
 	sim_reset_sim();
 
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	CHECK(hw_anyTimerLive(), "arming must start the hw sampler");
 
 	/* The initial drv_hwTmr_set() is one timer_start(). */
@@ -773,7 +901,7 @@ static void t_liveness_class2_wedge_resets_while_joined(void)
 	printf("  class-2 wedge (joined-but-silent) still forces an unmarked reset\n");
 	sim_reset_sim();
 
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	joined = 1;                            /* joined stays set through the wedge */
 	tick_both(3);                          /* a few healthy seconds of progress */
 
@@ -793,7 +921,7 @@ static void t_stack_activity_suppresses_reset(void)
 	printf("  BDB activity corroboration holds the fuse open while the ticker is wedged\n");
 	sim_reset_sim();
 
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	host_wedge();                          /* the primary ticker starves */
 
 	/* A future wedge that still delivers BDB commissioning callbacks would keep
@@ -814,7 +942,7 @@ static void t_rejoin_success_restarts_the_fuse(void)
 	printf("  resuming progress restarts the no-progress clock\n");
 	sim_reset_sim();
 
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	tick_both(3);                          /* healthy progress before the wedge */
 
 	host_wedge();
@@ -831,24 +959,28 @@ static void t_rejoin_success_restarts_the_fuse(void)
 	CHECK(host_resetCount == 1, "a full silent fuse after that must reset");
 }
 
-static void t_pairing_device_never_resets(void)
+static void t_unjoined_healthy_boot_stays_alive(void)
 {
-	printf("  factory-new pairing is never armed, so never reset\n");
+	printf("  healthy unjoined commissioning is armed but never resets\n");
 	sim_reset_sim();
 
-	/* No arm call: this boot has no credentials. */
+	/* Build 19 arms at BDB init success even before the first join. The
+	 * cooperative ticker is the proof that a long commissioning scan is alive,
+	 * not the joined bit. */
+	moes_livenessBooted();
+	CHECK(sim_anyTimerLive(), "BDB success must start the progress ticker");
+	CHECK(hw_anyTimerLive(), "BDB success must start the hw sampler");
+	joined = 0;
 	tick_both(5 * LIVENESS_FUSE_TICKS);
-	CHECK(host_resetCount == 0, "an unarmed boot must never reset");
-	CHECK(!sim_anyTimerLive(), "an unarmed boot must not burn a task timer slot");
-	CHECK(!hw_anyTimerLive(), "an unarmed boot must not arm the hw sampler");
+	CHECK(host_resetCount == 0, "healthy unjoined commissioning must stay alive");
 
-	/* The join completes: SUCCESS arms the monitor from here on. */
+	/* Commissioning success remains an idempotent arm/rebaseline. */
 	moes_livenessJoined();
-	CHECK(sim_anyTimerLive(), "join success must arm the ticker");
-	CHECK(hw_anyTimerLive(), "join success must arm the hw sampler");
+	CHECK(sim_anyTimerLive(), "join success must keep the ticker");
+	CHECK(hw_anyTimerLive(), "join success must keep the hw sampler");
 	host_wedge();
 	tick_hw_all(LIVENESS_FUSE_TICKS);
-	CHECK(host_resetCount == 1, "once armed, a silent wedge must reset");
+	CHECK(host_resetCount == 1, "a silent post-join wedge must reset");
 }
 
 static void t_liveness_timer_pool_exhausted(void)
@@ -857,7 +989,7 @@ static void t_liveness_timer_pool_exhausted(void)
 	sim_reset_sim();
 	timer_allocFails = 1;
 
-	moes_livenessBootedOnNetwork();       /* ticker schedule fails; hw sampler still starts */
+	moes_livenessBooted();                /* ticker schedule fails; hw sampler still starts */
 	CHECK(!sim_anyTimerLive(), "the ticker must not be scheduled when the pool is full");
 	CHECK(hw_anyTimerLive(), "the hw sampler must still be armed");
 
@@ -875,7 +1007,7 @@ static void t_liveness_coordinator_offline_no_reset(void)
 	printf("  a live scheduler never trips the fuse while the network is absent\n");
 	sim_reset_sim();
 
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	joined = 0;                            /* coordinator gone; scheduler still alive */
 
 	for(int round = 0; round < 3; round++){
@@ -889,11 +1021,12 @@ static void t_rescue_stable_no_clear_when_wedged(void)
 {
 	printf("  a wedged joined boot never clears its probation history\n");
 	nv_present = 1; nv_value = 2; nv_writes = 0; sim_reset_sim();
+	nv_youngPresent = 1; nv_youngValue = 1;      /* storm boot: 2 -> 3 */
 
-	sim_powerOn();                         /* count 2 -> 3 */
+	sim_powerOn();
 	nv_writes = 0;                         /* isolate the clear write below */
 	joined = 1;
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	moes_rescueStableTimerStart();
 
 	tick_both(MOES_RESCUE_STABLE_MINUTES - 1);   /* 19 healthy -> s_minsLeft 1 */
@@ -914,11 +1047,12 @@ static void t_rescue_stable_confirm_window_blocks_minute20_clear(void)
 {
 	printf("  a wedge landing exactly at minute 20 cannot clear the count\n");
 	nv_present = 1; nv_value = 2; nv_writes = 0; sim_reset_sim();
+	nv_youngPresent = 1; nv_youngValue = 1;      /* storm boot: 2 -> 3 */
 
-	sim_powerOn();                         /* count 2 -> 3 */
+	sim_powerOn();
 	nv_writes = 0;
 	joined = 1;
-	moes_livenessBootedOnNetwork();
+	moes_livenessBooted();
 	moes_rescueStableTimerStart();
 
 	tick_both(MOES_RESCUE_STABLE_MINUTES);       /* countdown reaches zero, confirm set */
@@ -961,6 +1095,53 @@ static void t_unmarked_reset_does_not_accumulate_factory_reset(void)
 	CHECK(maxSeen < 3, "must never reach the gesture threshold, got %d", maxSeen);
 }
 
+static void t_grownup_marker_is_the_hinge(void)
+{
+	printf("  the grown-up timer clears the marker; the next boot is calm\n");
+	/* Boot A: part of a storm (count 1, marks young). */
+	nv_present = 1; nv_value = 0;
+	nv_youngPresent = 1; nv_youngValue = 1;
+	nv_writes = 0; nv_youngWrites = 0; sim_reset_sim();
+
+	sim_powerOn();
+	CHECK(moes_rescueFailCount() == 1, "storm boot counts 1, got %d", moes_rescueFailCount());
+	CHECK(nv_youngValue == 1, "boot A leaves the marker set");
+
+	/* Boot A survives a full minute: the grown-up callback fires (in a fresh
+	 * process, as after any reset-free runtime it would have run in-place). */
+	{
+		int pipefd[2];
+		if(pipe(pipefd) != 0){ CHECK(0, "pipe() failed"); return; }
+		pid_t pid = fork();
+		if(pid == 0){
+			close(pipefd[0]);
+			/* inherit boot A's NV exactly */
+			u8 r = (u8)(moes_rescueGrownupCb(NULL) == -1 ? 1 : 0);
+			u8 out[2] = { r, nv_youngValue };
+			ssize_t w = write(pipefd[1], out, 2); (void)w;
+			close(pipefd[1]);
+			_exit(0);
+		}
+		close(pipefd[1]);
+		u8 in[2] = {0,0};
+		ssize_t rd = read(pipefd[0], in, 2); (void)rd;
+		close(pipefd[0]);
+		waitpid(pid, NULL, 0);
+		CHECK(in[0] == 1, "the grown-up callback must be one-shot");
+		CHECK(in[1] == 0, "it must clear the marker, left %d", in[1]);
+		nv_youngValue = in[1];
+		nv_youngPresent = 1;
+	}
+
+	/* Boot B inherits a cleared marker: a routine power event. It wipes the
+	 * probation history instead of counting. */
+	nv_writes = 0;
+	sim_powerOn();
+	CHECK(moes_rescueFailCount() == 0, "the calm boot wipes history, got %d", moes_rescueFailCount());
+	CHECK(nv_value == 0 && nv_writes == 1, "one wiping write");
+	CHECK(moes_rescueActive() == FALSE, "and no flag");
+}
+
 static void t_wedge_reset_rescue_chain(void)
 {
 	printf("  THE CHAIN: wedge -> unmarked reset -> probation -> rescue -> healthy clear\n");
@@ -971,7 +1152,9 @@ static void t_wedge_reset_rescue_chain(void)
 	 * progress ever again. The hw sampler (which survives the freeze) drives
 	 * the unmarked reset. */
 	u8  carried = 0;
+	u8  carriedYoung = 0;
 	int carriedPresent = 0;
+	int carriedYoungPresent = 0;
 	int firstRescueBoot = -1;
 
 	for(int boot = 1; boot <= MOES_RESCUE_FAIL_THRESHOLD + 1; boot++){
@@ -982,14 +1165,15 @@ static void t_wedge_reset_rescue_chain(void)
 		if(pid == 0){
 			close(pipefd[0]);
 			nv_present = carriedPresent; nv_value = carried; nv_writes = 0;
+			nv_youngPresent = carriedYoungPresent; nv_youngValue = carriedYoung;
 			sim_reset_sim();
 
 			moes_rescueBootCheck();           /* every boot, after stack_init */
 			u8 rescue = (u8)(moes_rescueActive() ? 1 : 0);
 
-			moes_livenessBootedOnNetwork();   /* NV says we belong to a network */
+			moes_livenessBooted();            /* BDB init success, before any join */
 			joined = 1;                       /* boot-time rejoin works */
-			tick_both(14);                    /* ~14 s on-air, then the wedge: */
+			tick_fast_both(14);               /* ~14 s on-air; the 60 s marker timer must NOT fire */
 			joined = 0;                       /* parent lost, scan frozen, no  */
 			                                  /* progress ever again          */
 			host_wedge();
@@ -999,21 +1183,22 @@ static void t_wedge_reset_rescue_chain(void)
 				ticksToReset++;
 			}
 
-			u8 out[6] = {
+			u8 out[7] = {
 				rescue,
 				(u8)(host_resetCount == 1 ? 1 : 0),
 				(u8)ticksToReset,
 				(u8)(host_skipWritesAtReset >= 1 ? 1 : 0),
 				nv_value,
-				(u8)nv_present
+				(u8)nv_present,
+				nv_youngValue
 			};
-			ssize_t w = write(pipefd[1], out, 6); (void)w;
+			ssize_t w = write(pipefd[1], out, 7); (void)w;
 			close(pipefd[1]);
 			_exit(0);
 		}
 		close(pipefd[1]);
-		u8 in[6] = {0,0,0,0,0,0};
-		ssize_t r = read(pipefd[0], in, 6); (void)r;
+		u8 in[7] = {0,0,0,0,0,0,0};
+		ssize_t r = read(pipefd[0], in, 7); (void)r;
 		close(pipefd[0]);
 		waitpid(pid, NULL, 0);
 
@@ -1033,10 +1218,12 @@ static void t_wedge_reset_rescue_chain(void)
 		}
 		carried        = in[4];
 		carriedPresent = in[5];
+		carriedYoung   = in[6];
+		carriedYoungPresent = 1;
 	}
 
 	CHECK(firstRescueBoot == MOES_RESCUE_FAIL_THRESHOLD + 1,
-		  "the wedge loop must latch rescue on boot %d, got %d",
+		  "the wedge loop must set the flag on boot %d, got %d",
 		  MOES_RESCUE_FAIL_THRESHOLD + 1, firstRescueBoot);
 	CHECK(carried == MOES_RESCUE_FAIL_THRESHOLD,
 		  "counter must park at the threshold, got %d", carried);
@@ -1051,12 +1238,13 @@ static void t_wedge_reset_rescue_chain(void)
 		if(pid == 0){
 			close(pipefd[0]);
 			nv_present = carriedPresent; nv_value = carried; nv_writes = 0;
+			nv_youngPresent = 1; nv_youngValue = 1;   /* storm boot: capped, flagged */
 			sim_reset_sim();
 
 			moes_rescueBootCheck();
 			u8 rescue = (u8)(moes_rescueActive() ? 1 : 0);
 
-			moes_livenessBootedOnNetwork();
+			moes_livenessBooted();
 			joined = 1;                       /* this network stays up */
 			moes_rescueStableTimerStart();    /* the app does this on join */
 			tick_both(MOES_RESCUE_STABLE_MINUTES + 2);
@@ -1121,6 +1309,8 @@ int main(void)
 	failures = 0;
 
 	run_isolated("fresh_device",            t_fresh_device);
+	run_isolated("calm_boot_wipes",         t_calm_boot_wipes);
+	run_isolated("grownup_marker_hinge",    t_grownup_marker_is_the_hinge);
 	run_isolated("below_threshold",         t_below_threshold);
 	run_isolated("at_threshold",            t_at_threshold);
 	run_isolated("above_threshold",         t_above_threshold);
@@ -1141,7 +1331,7 @@ int main(void)
 	run_isolated("liveness_hw_sample_rearms",   t_hw_sample_callback_explicitly_rearms);
 	run_isolated("liveness_activity_suppresses",t_stack_activity_suppresses_reset);
 	run_isolated("liveness_rejoin_restarts",    t_rejoin_success_restarts_the_fuse);
-	run_isolated("liveness_pairing_never_reset",t_pairing_device_never_resets);
+	run_isolated("liveness_unjoined_healthy",  t_unjoined_healthy_boot_stays_alive);
 	run_isolated("liveness_pool_exhausted",     t_liveness_timer_pool_exhausted);
 	run_isolated("wedge_reset_rescue_chain",    t_wedge_reset_rescue_chain);
 

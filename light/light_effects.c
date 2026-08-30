@@ -21,7 +21,6 @@
 #include "tuyaLightCtrl.h"
 #include "moes_flashcfg.h"
 #include "light_effects.h"
-#include "moes_rescue.h"
 
 moes_fx_t g_moesFx;
 
@@ -206,16 +205,6 @@ bool lightFx_start(u8 effect, u8 speed, u16 phase){
 	if(effect >= MOES_EF_MAX){
 		return FALSE;
 	}
-
-#if MOES_TS0505B
-	/* A light that has failed to reach a stable state MOES_RESCUE_FAIL_THRESHOLD
-	 * times running does not get a 25 fps timer. The engine is off by default
-	 * anyway, but "off by default" is not the same as "cannot be turned on by
-	 * a broadcast to a group while the light is trying to take an OTA". */
-	if(moes_rescueActive() && effect != MOES_EF_STEADY){
-		return FALSE;
-	}
-#endif
 
 	if(effect == MOES_EF_STEADY){
 		if(fxTimer){

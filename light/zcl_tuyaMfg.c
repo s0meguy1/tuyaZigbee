@@ -14,7 +14,6 @@
 #include "tuyaLight.h"
 #include "tuyaLightCtrl.h"
 #include "light_effects.h"
-#include "moes_rescue.h"
 #include "zcl_tuyaMfg.h"
 
 /* ---- reportable state mirrored from the engine ---- */
@@ -42,16 +41,6 @@ static status_t tuyaMfg_cmdHandler(zclIncoming_t *pInMsg){
 	if(pInMsg->hdr.cmd != 0x00 && pInMsg->hdr.cmd != 0x01){
 		return ZCL_STA_UNSUP_CLUSTER_COMMAND;
 	}
-
-#if MOES_TS0505B
-	/* Rescue mode: the cluster stays registered (so the light still looks
-	 * like itself to zigbee2mqtt and keeps its definition, and therefore its
-	 * OTA support) but accepts nothing. This is the only network-reachable
-	 * way to start the effect engine. */
-	if(moes_rescueActive()){
-		return ZCL_STA_FAILURE;
-	}
-#endif
 
 	u8 *p = pInMsg->pData;
 	u16 len = pInMsg->dataLen;

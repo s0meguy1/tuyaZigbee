@@ -165,9 +165,9 @@ static void moes_livenessEnsureTimer(void)
 }
 
 /*********************************************************************
- * @fn      moes_livenessBootedOnNetwork
+ * @fn      moes_livenessBooted
  */
-void moes_livenessBootedOnNetwork(void)
+void moes_livenessBooted(void)
 {
 	s_armed = TRUE;
 	moes_livenessEnsureTimer();
@@ -178,8 +178,14 @@ void moes_livenessBootedOnNetwork(void)
  */
 void moes_livenessJoined(void)
 {
-	s_armed    = TRUE;
-	s_progress = 0;
+	/* A completed join is a new, known-good progress baseline.  Rebase both
+	 * halves of the sampler state: resetting only s_progress would leave the
+	 * IRQ's old value in s_lastProgress, making the next sample look like
+	 * fresh progress and stretching the following silent interval to 61 s. */
+	s_armed        = TRUE;
+	s_progress     = 0;
+	s_lastProgress = 0;
+	s_noProgress   = 0;
 	moes_livenessEnsureTimer();
 }
 
@@ -201,7 +207,7 @@ u8 moes_livenessProgressCount(void)
 
 #else  /* !(MOES_TS0505B && MOES_LIVENESS_ENABLE) */
 
-void moes_livenessBootedOnNetwork(void){}
+void moes_livenessBooted(void){}
 void moes_livenessJoined(void){}
 void moes_livenessStackActivity(void){}
 u8   moes_livenessProgressCount(void){ return 0; }

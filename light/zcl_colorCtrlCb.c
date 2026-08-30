@@ -715,65 +715,29 @@ static void tuyaLight_moveToColorProcess(zcl_colorCtrlMoveToColorCmd_t *cmd)
 
 	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
 	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
+	/* Reportable ZCL state: z2m's tuyaLight converter reads CurrentX/CurrentY
+	 * after a MoveToColor and configures reporting for both. */
+	pColor->currentX = cmd->colorX;
+	pColor->currentY = cmd->colorY;
+
+	/* Build 20: XY must actually reach the LEDs. Both render paths route every
+	 * non-colour-temperature mode through hsvToRGB(currentHue,
+	 * currentSaturation, ...), and no XY command ever wrote those fields - so
+	 * a colour change moved attributes while the light held its previous
+	 * output. Derive the equivalent HSV here and the established, proven
+	 * output path renders it with no second transform to keep calibrated. */
+	xyToHueSat(pColor->currentX, pColor->currentY,
+			   &pColor->currentHue, &pColor->currentSaturation);
+
 	colorInfo.hueRemainingTime = 0;
 	colorInfo.saturationRemainingTime = 0;
 #if COLOR_CCT_SUPPORT
 	colorInfo.colorTempRemainingTime = 0;
 #endif
 
-
-}
-
-/*********************************************************************
- * @fn      tuyaLight_moveColorProcess
- *
- * @brief
- *
- * @param   cmd
- *
- * @return  None
- */
-static void tuyaLight_moveColorProcess(zcl_colorCtrlMoveColorCmd_t *cmd)
-{
-	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
-
-	tuyaLight_updateColorMode(ZCL_COLOR_MODE_CURRENT_X_Y);
-
-	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
-	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
-	colorInfo.hueRemainingTime = 0;
-	colorInfo.saturationRemainingTime = 0;
-#if COLOR_CCT_SUPPORT
-	colorInfo.colorTempRemainingTime = 0;
-#endif
-
-
-}
-
-/*********************************************************************
- * @fn      tuyaLight_stepColorProcess
- *
- * @brief
- *
- * @param   cmd
- *
- * @return  None
- */
-static void tuyaLight_stepColorProcess(zcl_colorCtrlStepColorCmd_t *cmd)
-{
-	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
-
-	tuyaLight_updateColorMode(ZCL_COLOR_MODE_CURRENT_X_Y);
-
-	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
-	pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_X_Y;
-	colorInfo.hueRemainingTime = 0;
-	colorInfo.saturationRemainingTime = 0;
-#if COLOR_CCT_SUPPORT
-	colorInfo.colorTempRemainingTime = 0;
-#endif
-
-
+	/* Apply it. Without this the new colour waits for some unrelated later
+	 * refresh (an on/off or level command) before it becomes visible. */
+	light_fresh();
 }
 
 /*********************************************************************
@@ -788,98 +752,31 @@ static void tuyaLight_stepColorProcess(zcl_colorCtrlStepColorCmd_t *cmd)
 static void tuyaLight_enhancedMoveToHueProcess(zcl_colorCtrlEnhancedMoveToHueCmd_t *cmd)
 {
 	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
+	zcl_colorCtrlMoveToHueCmd_t moveToHueCmd;
 
-	tuyaLight_updateColorMode(ZCL_COLOR_MODE_CURRENT_HUE_SATURATION);
+	/* Build 20: this was a stub - it set the colour mode, ran a switch with
+	 * four empty cases and returned success, so an enhanced hue command
+	 * changed nothing at all. The output stage has no 16-bit hue resolution,
+	 * so scale the enhanced hue onto the 8-bit hue the render path uses and
+	 * reuse the proven transition handler instead of duplicating it. */
+	moveToHueCmd.hue = (u8)(((u32)cmd->enhancedHue * ZCL_COLOR_ATTR_HUE_MAX) / 0xFFFF);
+	moveToHueCmd.direction = cmd->direction;
+	moveToHueCmd.transitionTime = cmd->transitionTime;
 
-	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+	tuyaLight_moveToHueProcess(&moveToHueCmd);
+
+	/* The command was an enhanced one even though the rendered resolution is
+	 * 8-bit; report the enhanced mode so the attribute is not a lie. */
 	pColor->enhancedColorMode = ZCL_ENHANCED_COLOR_MODE_CURRENT_HUE_SATURATION;
-#if COLOR_CCT_SUPPORT
-	colorInfo.colorTempRemainingTime = 0;
-#endif
-
-	switch(cmd->direction){
-		case COLOR_CTRL_DIRECTION_SHORTEST_DISTANCE:
-			break;
-		case COLOR_CTRL_DIRECTION_LONGEST_DISTANCE:
-			break;
-		case COLOR_CTRL_DIRECTION_UP:
-			break;
-		case COLOR_CTRL_DIRECTION_DOWN:
-			break;
-		default:
-			break;
-	}
-
-
 }
 
-/*********************************************************************
- * @fn      tuyaLight_enhancedMoveHueProcess
- *
- * @brief
- *
- * @param   cmd
- *
- * @return  None
- */
-static void tuyaLight_enhancedMoveHueProcess(zcl_colorCtrlEnhancedMoveHueCmd_t *cmd)
-{
-	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
-
-	tuyaLight_updateColorMode(ZCL_COLOR_MODE_CURRENT_HUE_SATURATION);
-
-	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
-	pColor->enhancedColorMode = ZCL_ENHANCED_COLOR_MODE_CURRENT_HUE_SATURATION;
-#if COLOR_CCT_SUPPORT
-	colorInfo.colorTempRemainingTime = 0;
-#endif
-
-	switch(cmd->moveMode){
-		case COLOR_CTRL_MOVE_STOP:
-			break;
-		case COLOR_CTRL_MOVE_UP:
-			break;
-		case COLOR_CTRL_MOVE_DOWN:
-			break;
-		default:
-			break;
-	}
-
-
-}
-
-/*********************************************************************
- * @fn      tuyaLight_enhancedStepHueProcess
- *
- * @brief
- *
- * @param   cmd
- *
- * @return  None
- */
-static void tuyaLight_enhancedStepHueProcess(zcl_colorCtrlEnhancedStepHueCmd_t *cmd)
-{
-	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
-
-	tuyaLight_updateColorMode(ZCL_COLOR_MODE_CURRENT_HUE_SATURATION);
-
-	pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
-	pColor->enhancedColorMode = ZCL_ENHANCED_COLOR_MODE_CURRENT_HUE_SATURATION;
-#if COLOR_CCT_SUPPORT
-	colorInfo.colorTempRemainingTime = 0;
-#endif
-
-	switch(cmd->stepMode){
-		case COLOR_CTRL_STEP_MODE_UP:
-			break;
-		case COLOR_CTRL_STEP_MODE_DOWN:
-			break;
-		default:
-			break;
-	}
-
-
-}
+/* Build 20: tuyaLight_enhancedMoveHueProcess() and
+ * tuyaLight_enhancedStepHueProcess() are deleted, not merely unhooked.
+ * Both were stubs whose switch statements had empty cases: they set the
+ * colour mode, changed no hue and reported success. Their dispatch cases
+ * now return ZCL_STA_UNSUP_CLUSTER_COMMAND, matching how Build 19 handles
+ * MoveColor/StepColor. Keeping the bodies around only produced
+ * defined-but-not-used warnings and invited someone to re-wire them. */
 
 /*********************************************************************
  * @fn      tuyaLight_enhancedMoveToHueAndSaturationProcess
@@ -1188,20 +1085,20 @@ status_t tuyaLight_colorCtrlCb(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId, void 
 				tuyaLight_moveToColorProcess((zcl_colorCtrlMoveToColorCmd_t *)cmdPayload);
 				break;
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_MOVE_COLOR:
-				tuyaLight_moveColorProcess((zcl_colorCtrlMoveColorCmd_t *)cmdPayload);
-				break;
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_STEP_COLOR:
-				tuyaLight_stepColorProcess((zcl_colorCtrlStepColorCmd_t *)cmdPayload);
-				break;
+				/* Continuous/step XY never had an integrator or calibrated
+				 * output path. Do not claim success or mutate CurrentX/Y; Build
+				 * 19 supports exact MoveToColor state only. */
+				return ZCL_STA_UNSUP_CLUSTER_COMMAND;
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_ENHANCED_MOVE_TO_HUE:
 				tuyaLight_enhancedMoveToHueProcess((zcl_colorCtrlEnhancedMoveToHueCmd_t *)cmdPayload);
 				break;
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_ENHANCED_MOVE_HUE:
-				tuyaLight_enhancedMoveHueProcess((zcl_colorCtrlEnhancedMoveHueCmd_t *)cmdPayload);
-				break;
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_ENHANCED_STEP_HUE:
-				tuyaLight_enhancedStepHueProcess((zcl_colorCtrlEnhancedStepHueCmd_t *)cmdPayload);
-				break;
+				/* Both handlers are stubs that mutate nothing and return
+				 * success. Refuse them the same way Build 19 refuses
+				 * MoveColor/StepColor rather than silently doing nothing. */
+				return ZCL_STA_UNSUP_CLUSTER_COMMAND;
 			case ZCL_CMD_LIGHT_COLOR_CONTROL_ENHANCED_MOVE_TO_HUE_AND_SATURATION:
 				tuyaLight_enhancedMoveToHueAndSaturationProcess((zcl_colorCtrlEnhancedMoveToHueAndSaturationCmd_t *)cmdPayload);
 				break;

@@ -62,6 +62,7 @@ dkms.conf
 # host test binary
 tools/rescue_hosttest/test_rescue
 tools/bench_selftest_hosttest/test_bench_selftest
+tools/eui_hosttest/test_eui
 
 # Local MOES bench records and captures. Existing tracked history is not hidden
 # by these rules; sanitize it explicitly before publishing.
