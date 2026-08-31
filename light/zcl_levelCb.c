@@ -189,7 +189,14 @@ static void tuyaLight_moveToLevelProcess(u8 cmdId, moveToLvl_t *cmd)
 							ZCL_LEVEL_ATTR_MIN_LEVEL, ZCL_LEVEL_ATTR_MAX_LEVEL, FALSE);
 
 	if(levelInfo.withOnOff){
-		if(levelInfo.stepLevel256 > 0){
+		/* Move-To-Level-With-On/Off expresses the requested final power state
+		 * through the TARGET level, not through the direction of travel. The
+		 * old step-sign test left an OFF light dark whenever Zigbee2MQTT asked
+		 * it to turn on at the same or a lower non-minimum brightness. That is
+		 * the normal state-only ON path because the converter reuses its cached
+		 * level. Turn on for every non-minimum target; the transition timer
+		 * still turns off only when a move actually reaches minimum. */
+		if(cmd->level > ZCL_LEVEL_ATTR_MIN_LEVEL){
 			tuyaLight_onoff(ZCL_CMD_ONOFF_ON);
 		}else if(pLevel->curLevel == ZCL_LEVEL_ATTR_MIN_LEVEL){
 			tuyaLight_onoff(ZCL_CMD_ONOFF_OFF);

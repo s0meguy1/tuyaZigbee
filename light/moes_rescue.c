@@ -13,16 +13,15 @@
 #include "zb_api.h"
 #include "zcl_include.h"
 #include "moes_liveness.h"
+#include "moes_nvitems.h"
 #include "moes_rescue.h"
 
 #if (MOES_TS0505B && MOES_RESCUE_ENABLE)
 
 /* Our own NV items in NV_MODULE_APP. Item ids are per-module and the SDK's
- * nv_item_t enum uses 0x01..0x2C plus 0x80; 0x70 is moes_flashcfg.c's
- * reset-skip flag and 0x71 is the probation count. Neither 0x00 (reserved)
- * nor 0xFF (ITEM_FIELD_IDLE) may be used; nothing else is range-checked. */
-#define MOES_NV_ITEM_BOOT_PROBATION     0x71
-#define MOES_NV_ITEM_BOOT_YOUNG         0x72
+ * nv_item_t enum uses 0x01..0x2C plus 0x80. Neither 0x00 (reserved) nor 0xFF
+ * (ITEM_FIELD_IDLE) may be used; moes_nvitems.h owns the private allocation
+ * and makes collisions a compile-time error. */
 
 /* How long a boot must survive before it counts as "grew up". Any
  * watchdog-bounded reset loop dies inside the boot interval (b17 caps it
@@ -68,10 +67,10 @@ void moes_rescueBootCheck(void)
 	 * NV_ITEM_NOT_FOUND and leaves the value untouched. Treat that as
 	 * zero explicitly rather than relying on the callee not writing the
 	 * buffer. */
-	if(nv_flashReadNew(1, NV_MODULE_APP, MOES_NV_ITEM_BOOT_PROBATION, 1, &cnt) != NV_SUCC){
+	if(moes_nvReadByteExact(MOES_NV_ITEM_BOOT_PROBATION, &cnt) != NV_SUCC){
 		cnt = 0;
 	}
-	if(nv_flashReadNew(1, NV_MODULE_APP, MOES_NV_ITEM_BOOT_YOUNG, 1, &prevYoung) != NV_SUCC){
+	if(moes_nvReadByteExact(MOES_NV_ITEM_BOOT_YOUNG, &prevYoung) != NV_SUCC){
 		prevYoung = 0;
 	}
 

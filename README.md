@@ -1,10 +1,17 @@
 # tuyaZigbee
 [![Build](https://github.com/doctor64/tuyaZigbee/actions/workflows/build.yml/badge.svg)](https://github.com/doctor64/tuyaZigbee/actions/workflows/build.yml)
 
-> **MOES firmware work in progress — do not flash it yet.** This branch contains
-> the replacement firmware, but the radio-silence failure is not fixed and the
-> current recovery/update path is not proven on hardware. Work on a safe fix is
-> still ongoing.
+> **MOES firmware: experimental, but the conversion path now works end to end.**
+> The stock-to-custom OTA conversion has been carried through on hardware,
+> including recovery back to stock and reconversion. The "radio silence" that
+> blocked this project turned out **not** to be a firmware fault: the conversion
+> erases NV, which erases the network credentials, so the device must rejoin —
+> and it looks dead until you open permit-join. See
+> [docs/moes_ts0505b_conversion.md](docs/moes_ts0505b_conversion.md).
+>
+> This is still experimental research on two fixtures, not a release. Effects, a
+> mains power cycle and a soak are unrun on the current build. Do not deploy it
+> without a hardware programmer and a tested backup/restore procedure.
 
 **ATTENTION!**
 Current version of firmware have a critical bug, making impossible next updates over OTA. If you don't have hardware programmer, do not install updated firmware until bug is fixed.
@@ -14,18 +21,31 @@ Current version of firmware have a critical bug, making impossible next updates 
 The `moes-ts0505b` branch is experimental research, not a deployable firmware
 release.
 
-Build 20 is the furthest any build here has been carried on real hardware: on a
-single bench fixture it joined, stayed stable, and was confirmed rendering red,
-green, blue and white on command, corroborated by direct PWM-register reads.
-That is one fixture over a short window — it is not a fleet, duration, or
-field-power proof. Build 21, the current tip of this branch, is source and
-host-test only: it has never been flashed or powered.
+Build 32 is the current tip. It has been carried further on real hardware than
+earlier builds, but the qualification below still stands in full.
+
+* Build 30 completed a stock-to-custom OTA conversion on a bench fixture, which
+  then joined, interviewed and rendered colour on command.
+* Build 32 has been installed two ways on two fixtures: as a custom-to-custom
+  update, and as a stock-to-custom conversion. Both kept their addresses,
+  rejoined, interviewed, and answered device-backed reads.
+
+That is **two fixtures over hours**, not a fleet, a duration, or a field-power
+proof. Effects, a mains power cycle, and a soak remain unrun on Build 32.
 
 Note what does **not** count as evidence here, because it misled this project
 repeatedly: Zigbee command/readback success does not prove LED output. A
 claimed output change needs visual confirmation on a fixture with LEDs, or
 direct PWM-register evidence. Do not deploy any of this without a recoverable
 hardware programmer and a tested backup/restore procedure.
+
+**If you are converting a stock device, read
+[docs/moes_ts0505b_conversion.md](docs/moes_ts0505b_conversion.md) first.** The
+conversion erases NV, which erases the network credentials, so **the device must
+rejoin and you have to open permit-join after the install completes**. Until you
+do, it looks exactly like a bricked device: interview incomplete, every ZCL read
+timing out, no useful log output. It is not bricked. That one step accounted for
+more wasted debugging on this project than any actual firmware bug.
 
 `bughunt/VERIFICATION_STATUS.md` carries this project's evidence matrix. The
 copy published here is a historical snapshot and lags the branch; treat the

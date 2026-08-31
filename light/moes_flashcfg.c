@@ -16,6 +16,7 @@
 #include "factory_reset.h"
 #include "moes_eui.h"
 #include "moes_flashcfg.h"
+#include "moes_nvitems.h"
 
 STATIC_ASSERT(MOES_FLASH_EUI_ASCII_LEN == MOES_EUI_ASCII_LEN);
 
@@ -84,7 +85,6 @@ bool moes_flashGetIeee(u8 *ieee){
 /* Reset-counter skip flag: one byte in our own NV module so the swap and
  * bank-migration soft resets are never mistaken for user power cycles.
  * (nv item ids are per-module; APP module id 6, we take a private id.) */
-#define MOES_NV_ITEM_SKIP_RST   0x70
 
 void moes_resetSkipNextBoot(void){
 	u8 one = 1;
@@ -93,7 +93,7 @@ void moes_resetSkipNextBoot(void){
 
 bool moes_resetConsumeSkipFlag(void){
 	u8 flag = 0;
-	if(nv_flashReadNew(1, NV_MODULE_APP, MOES_NV_ITEM_SKIP_RST, 1, &flag) == NV_SUCC && flag){
+	if(moes_nvReadByteExact(MOES_NV_ITEM_SKIP_RST, &flag) == NV_SUCC && flag){
 		flag = 0;
 		nv_flashWriteNew(1, NV_MODULE_APP, MOES_NV_ITEM_SKIP_RST, 1, &flag);
 		return TRUE;

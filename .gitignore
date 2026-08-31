@@ -63,6 +63,8 @@ dkms.conf
 tools/rescue_hosttest/test_rescue
 tools/bench_selftest_hosttest/test_bench_selftest
 tools/eui_hosttest/test_eui
+tools/nvheal_hosttest/test_nvheal
+tools/build19_hosttest/test_level
 
 # Local MOES bench records and captures. Existing tracked history is not hidden
 # by these rules; sanitize it explicitly before publishing.
@@ -84,3 +86,5 @@ build-27/
 build-28/
 build-29/
 build-30/
+build-31/
+build-32/

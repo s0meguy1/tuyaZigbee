@@ -395,10 +395,9 @@ void user_init(bool isRetention)
 	moes_bootMarkInit();
 #endif
 
-	/* Build 30: BEFORE stack_init(), because stack_init() calls nv_init() and
-	 * the whole point is to erase the inherited stock NV before the NV layer
-	 * ever reads it. Builds 28 and 29 both erased afterwards and both failed -
-	 * see moes_nvheal.h. */
+	/* Build 30/31: BEFORE stack_init(), because stack_init() calls nv_init().
+	 * Foreign stock NV must be erased before the NV layer reads it; CRC-backed
+	 * legacy custom NV must instead be preserved. See moes_nvheal.h. */
 	moes_nvHealPreStack();
 
 	/* Initialize LEDs*/
@@ -425,9 +424,9 @@ void user_init(bool isRetention)
 	 * same reason, and because everything below needs to know the answer.
 	 * It uses two one-byte application items (probation and the boot-young
 	 * marker); their bounded writes are documented in moes_rescue.h. */
-	/* Build 30: the NV region was erased before stack_init() if it was foreign;
-	 * claim ownership now that nv_init() has run against it and the NV API is
-	 * coherent. No-op on a normal boot. */
+	/* Build 31: claim an erased conversion region or migrate preserved Build
+	 * 19-30 custom NV to the collision-free owner item now that nv_init() has
+	 * run and the normal NV API is coherent. No-op on a current owned boot. */
 	moes_nvHealPostStack();
 
 	moes_rescueBootCheck();

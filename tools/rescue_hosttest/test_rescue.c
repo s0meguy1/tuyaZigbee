@@ -42,6 +42,24 @@ static int  nv_writes;           /* probation-item flash writes */
 static int  nv_youngWrites;      /* marker-item flash writes */
 static int  nv_readFails;        /* force reads to fail */
 static int  nv_writeFails;       /* force writes to fail */
+static u16  nv_probationLen = 1;
+static u16  nv_youngLen = 1;
+
+nv_sts_t nv_flashSingleItemSizeGet(u8 id, u8 itemId, u16 *len)
+{
+	if(id != NV_MODULE_APP || nv_readFails){
+		return NV_ITEM_NOT_FOUND;
+	}
+	if(itemId == SIM_NV_ITEM_YOUNG && nv_youngPresent){
+		*len = nv_youngLen;
+		return NV_SUCC;
+	}
+	if(itemId == SIM_NV_ITEM_PROBATION && nv_present){
+		*len = nv_probationLen;
+		return NV_SUCC;
+	}
+	return NV_ITEM_NOT_FOUND;
+}
 
 nv_sts_t nv_flashReadNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 {
@@ -68,7 +86,7 @@ nv_sts_t nv_flashReadNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 
 nv_sts_t nv_flashWriteNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 {
-	(void)single; (void)len;
+	(void)single;
 	if(id != NV_MODULE_APP){
 		return NV_ITEM_NOT_FOUND;
 	}
@@ -79,6 +97,7 @@ nv_sts_t nv_flashWriteNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 		}
 		nv_youngPresent = 1;
 		nv_youngValue = *buf;
+		nv_youngLen = len;
 		return NV_SUCC;
 	}
 	if(itemId != SIM_NV_ITEM_PROBATION){
@@ -90,6 +109,7 @@ nv_sts_t nv_flashWriteNew(u8 single, u8 id, u8 itemId, u16 len, u8 *buf)
 	}
 	nv_present = 1;
 	nv_value = *buf;
+	nv_probationLen = len;
 	return NV_SUCC;
 }
 
@@ -424,7 +444,7 @@ static void t_storm_boundary(int storedCount, int expectRescue)
 	printf("  storm boot with stored count %d: flag=%d\n", storedCount, expectRescue);
 	nv_present = 1; nv_value = (u8)storedCount;
 	nv_youngPresent = 1; nv_youngValue = 1;
-	nv_writes = 0;
+	nv_writes = 0; nv_youngWrites = 0;
 
 	sim_powerOn();
 
@@ -432,7 +452,8 @@ static void t_storm_boundary(int storedCount, int expectRescue)
 		  "advisory flag should be %d", expectRescue);
 	CHECK(nv_writes == (storedCount < MOES_RESCUE_FAIL_THRESHOLD ? 1 : 0),
 		  "probation write only while below cap, got %d", nv_writes);
-	CHECK(nv_youngWrites == 1, "marker write, got %d", nv_youngWrites);
+	CHECK(nv_youngWrites == 0,
+	      "an already-set young marker must cost zero writes, got %d", nv_youngWrites);
 }
 
 static void t_below_threshold(void){ t_storm_boundary(MOES_RESCUE_FAIL_THRESHOLD - 2, 0); }
@@ -571,6 +592,22 @@ static void t_unreadable_nv(void)
 	nv_readFails = 0;
 }
 
+static void t_wrong_length_nv_is_unreadable(void)
+{
+	printf("  wrong-length private NV is rejected before a one-byte SDK read\n");
+	nv_present = 1; nv_value = 5; nv_probationLen = 4;
+	nv_youngPresent = 1; nv_youngValue = 1; nv_youngLen = 4;
+	nv_writes = 0; nv_youngWrites = 0;
+
+	sim_powerOn();
+
+	CHECK(moes_rescueActive() == FALSE, "wrong-length records must not latch rescue");
+	CHECK(moes_rescueFailCount() == 0, "wrong-length probation must read as absent");
+	CHECK(nv_writes == 0, "wrong-length probation must not cause a probation write");
+	CHECK(nv_youngWrites == 1 && nv_youngLen == 1 && nv_youngValue == 1,
+	      "wrong-length young record must be replaced safely with one byte");
+}
+
 static void t_unwritable_nv(void)
 {
 	printf("  an unwritable marker degrades gracefully, no crash\n");
@@ -626,8 +663,9 @@ static void t_flash_wear_bound(void)
 {
 	printf("  a permanent reset loop writes flash a bounded number of times\n");
 	/* Model 200 consecutive storm boots by carrying both NV items across
-	 * fork()ed children - each child is one power-on. Every boot writes
-	 * its young marker (1 byte); probation writes stop at the cap. */
+	 * fork()ed children - each child is one power-on. The first boot writes
+	 * young=1; every later storm boot sees it already set and writes nothing.
+	 * Probation writes stop at the cap. */
 	nv_present = 0; nv_value = 0; nv_writes = 0;
 	nv_youngPresent = 0; nv_youngValue = 0;
 
@@ -668,9 +706,9 @@ static void t_flash_wear_bound(void)
 	}
 
 	printf("        200 storm boots -> %d NV writes, final count %d\n", totalWrites, carried);
-	CHECK(totalWrites == 200 + MOES_RESCUE_FAIL_THRESHOLD,
-		  "expected %d writes (marker x200 + probation x%d), got %d",
-		  200 + MOES_RESCUE_FAIL_THRESHOLD, MOES_RESCUE_FAIL_THRESHOLD, totalWrites);
+	CHECK(totalWrites == 1 + MOES_RESCUE_FAIL_THRESHOLD,
+		  "expected %d writes (marker x1 + probation x%d), got %d",
+		  1 + MOES_RESCUE_FAIL_THRESHOLD, MOES_RESCUE_FAIL_THRESHOLD, totalWrites);
 	CHECK(carried == MOES_RESCUE_FAIL_THRESHOLD,
 		  "counter should have parked at the threshold, got %d", carried);
 	CHECK(carriedYoungPresent && carriedYoung == 1,
@@ -1320,6 +1358,7 @@ int main(void)
 	run_isolated("gesture_cannot_latch",    t_pairing_gesture_cannot_latch);
 	run_isolated("garbage_nv_failsafe",     t_garbage_nv_is_failsafe);
 	run_isolated("unreadable_nv",           t_unreadable_nv);
+	run_isolated("wrong_length_nv",         t_wrong_length_nv_is_unreadable);
 	run_isolated("unwritable_nv",           t_unwritable_nv);
 	run_isolated("timer_pool_exhausted",    t_timer_pool_exhausted);
 	run_isolated("timer_only_when_needed",  t_no_timer_when_nothing_to_clear);

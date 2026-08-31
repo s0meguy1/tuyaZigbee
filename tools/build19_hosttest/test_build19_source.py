@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # The branch this project actually publishes to. Its history is a deliberately
 # disjoint, sanitized, code-only lineage; the detailed local history is never
 # pushed. Used to prove the exemption below is not a leak.
-PUBLIC_REF = "fork/moes-ts0505b"
+PUBLIC_REF = "fork/main"
 
 # Forensic notes that record a real per-device EUI as evidence. These are kept
 # locally on purpose and excluded from the code-only publication, so the EUI
