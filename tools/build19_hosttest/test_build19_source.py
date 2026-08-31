@@ -291,6 +291,39 @@ class Build19SourceContracts(unittest.TestCase):
                 f"private forensic evidence is published on {PUBLIC_REF}: {relative}",
             )
 
+    def test_colour_temperature_range_matches_what_z2m_advertises(self) -> None:
+        """The declared CT range rescales the whole curve, not just the ends.
+
+        temperatureToCW() interpolates linearly between colorTempPhysicalMin
+        and Max, so these constants set the mapping for every mired value, not
+        only the endpoints. Zigbee2MQTT hardcodes 153-500 for TS0505B and never
+        reads the device's own attributes, and the stock firmware drove that
+        same range on this hardware. A narrower pair silently rescales every
+        colour temperature - build 32 shipped 250/454, which rendered mid-scale
+        327 mireds as 38% warm where stock gives 50%, so a converted fixture
+        could never match a stock one in the same room.
+        """
+        attrs = source("light/tuyaLightEpCfg.c")
+
+        for name, expected, mired in (
+            ("COLOR_TEMPERATURE_PHYSICAL_MIN", "0x0099", 153),
+            ("COLOR_TEMPERATURE_PHYSICAL_MAX", "0x01F4", 500),
+        ):
+            match = re.search(rf"#define\s+{name}\s+(0x[0-9A-Fa-f]+)", attrs)
+            self.assertIsNotNone(match, f"{name} not found")
+            self.assertEqual(
+                int(match.group(1), 16),
+                mired,
+                f"{name} must be {expected} ({mired} mireds) to match the range "
+                f"z2m advertises and stock drives",
+            )
+
+        # The interpolation itself must stay parameterised by the attributes
+        # rather than reintroducing a hardcoded span.
+        ctrl = source("light/tuyaLightCtrl.c")
+        self.assertIn("colorTempPhysicalMinMireds", ctrl)
+        self.assertIn("colorTempPhysicalMaxMireds", ctrl)
+
     def test_advertised_xy_attributes_have_real_state_and_move_to_updates_it(self) -> None:
         attrs = source("light/tuyaLightEpCfg.c")
         header = source("light/tuyaLight.h")

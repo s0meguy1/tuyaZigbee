@@ -41,8 +41,16 @@
 #define ZCL_ATTRID_BASIC_GENEIC_DEVICE_TYPE   0x0009
 
 #if COLOR_CCT_SUPPORT
-#define COLOR_TEMPERATURE_PHYSICAL_MIN	0x00FA//4000K
-#define COLOR_TEMPERATURE_PHYSICAL_MAX	0x01C6//2200K
+/* Must match the range Zigbee2MQTT advertises for TS0505B (153-500 mireds),
+ * and the range the stock Tuya firmware drove on this same hardware. These are
+ * not cosmetic: temperatureToCW() interpolates linearly between them, so a
+ * narrower pair does not merely clamp the ends - it rescales the whole curve.
+ * With the old 250/454 a request for mid-scale 327 mireds produced 38% warm
+ * where stock produces 50%, so a converted fixture never matched a stock one
+ * in the same room, and everything below 250 or above 454 collapsed onto the
+ * endpoints while still being reported back as the clamped value. */
+#define COLOR_TEMPERATURE_PHYSICAL_MIN	0x0099//153 mireds, 6500K
+#define COLOR_TEMPERATURE_PHYSICAL_MAX	0x01F4//500 mireds, 2000K
 #endif
 
 /* our effect control lives on the Tuya manufacturer cluster */
