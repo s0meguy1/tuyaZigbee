@@ -291,6 +291,44 @@ class Build19SourceContracts(unittest.TestCase):
                 f"private forensic evidence is published on {PUBLIC_REF}: {relative}",
             )
 
+    def test_brightness_curve_is_stock_linear_not_squared(self) -> None:
+        """The output curve must match stock, and Off must stay Off.
+
+        Stock maps the ZCL level linearly into brightmin..brightmax percent
+        (1..100 in every factory block examined). Squaring the level instead is
+        5x dimmer at level 51 and only 1.3x at 191, so it looks fine at normal
+        brightness and plainly wrong when dimmed - which is where a downlight
+        spends its evenings. Measured on hardware: a converted bulb at level
+        117 matches stock bulbs at level 51.
+
+        The zero check is not cosmetic: hwLight_onOffUpdate() drives Off
+        through this path, so a brightmin floor applied at zero would leave
+        every "off" light faintly lit.
+        """
+        ctrl = source("light/tuyaLightCtrl.c")
+
+        self.assertIn("moes_levelCurve", ctrl)
+        self.assertRegex(
+            ctrl, r"#define\s+MOES_BRIGHT_MIN_PCT\s+1\b",
+            "brightmin must be 1 percent, as the factory config specifies")
+        self.assertRegex(
+            ctrl, r"#define\s+MOES_BRIGHT_MAX_PCT\s+100\b",
+            "brightmax must be 100 percent, as the factory config specifies")
+
+        curve = re.search(r"static u8 moes_levelCurve\(u8 v\)\s*\{.*?\n\}",
+                          ctrl, re.S)
+        self.assertIsNotNone(curve, "moes_levelCurve not found")
+        self.assertRegex(curve.group(0), r"if\(v == 0\)\s*\{\s*return 0;",
+                         "zero input must produce zero duty, or Off stays lit")
+
+        # The squared curve must be gone from every channel, not just the
+        # white ones - a mixed curve would make colour modes disagree with
+        # white modes at the same level.
+        for chan in ("r", "g", "b", "cw", "ww"):
+            self.assertNotRegex(
+                ctrl, rf"\(\(u16\){chan} \* {chan}\) / 255",
+                f"squared gamma still applied to channel {chan}")
+
     def test_colour_temperature_range_matches_what_z2m_advertises(self) -> None:
         """The declared CT range rescales the whole curve, not just the ends.
 

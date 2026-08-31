@@ -127,6 +127,48 @@ static u16 moes_duty(moes_chan_t *ch, u8 v){
 	return (u16)v * PWM_FULL_DUTYCYCLE;
 }
 
+/* Stock's brightness curve.
+ *
+ * The factory config block at 0xF8000 carries brightmin:1 and brightmax:100,
+ * and stock maps the ZCL level linearly into that percent span before driving
+ * PWM. We previously squared the level instead, described in a comment as
+ * "matches perceived brightness, as stock/upstream" - the perceptual claim is
+ * true, but the claim about stock is not, and the difference is severe at the
+ * bottom of the range where a downlight actually lives:
+ *
+ *     level  ours (squared)   stock (linear)
+ *       51        4%              21%          5x, plainly visible
+ *      191       56%              75%          1.3x, not visible
+ *
+ * Measured on hardware against stock fixtures in the same fixture group: a
+ * converted bulb at level 117 renders identically to stock bulbs at level 51,
+ * and 117 is exactly the level our squared curve needed to reach stock's 21%.
+ * Both the matching and the mismatching case were confirmed by eye.
+ *
+ * The constants are compiled in rather than parsed. The config block is
+ * byte-identical across every unit examined, down to its crc, so there is
+ * nothing per-unit to read, and moes_flashCfgLoad() deliberately keeps a JSON
+ * parser off the boot path.
+ *
+ * Zero must stay zero: brightmin is a dimming floor for a lit channel, not an
+ * output floor, and hwLight_onOffUpdate() drives Off through this path. */
+#define MOES_BRIGHT_MIN_PCT   1
+#define MOES_BRIGHT_MAX_PCT   100
+
+static u8 moes_levelCurve(u8 v)
+{
+	u32 pct;
+
+	if(v == 0){
+		return 0;
+	}
+
+	pct = MOES_BRIGHT_MIN_PCT +
+	      (((u32)v * (MOES_BRIGHT_MAX_PCT - MOES_BRIGHT_MIN_PCT)) / 255);
+
+	return (u8)((pct * 255) / 100);
+}
+
 /*********************************************************************
  * @fn      moes_outSet
  *
@@ -143,12 +185,11 @@ void moes_outSet(u8 r, u8 g, u8 b, u8 cw, u8 ww)
 		b = (u16)b * g_moesCfg.gmwb / 100;
 	}
 
-	/* quadratic gamma: matches perceived brightness, as stock/upstream */
-	u8 gr = ((u16)r * r) / 255;
-	u8 gg = ((u16)g * g) / 255;
-	u8 gb = ((u16)b * b) / 255;
-	u8 gc = ((u16)cw * cw) / 255;
-	u8 gw = ((u16)ww * ww) / 255;
+	u8 gr = moes_levelCurve(r);
+	u8 gg = moes_levelCurve(g);
+	u8 gb = moes_levelCurve(b);
+	u8 gc = moes_levelCurve(cw);
+	u8 gw = moes_levelCurve(ww);
 
 	pwmSetDuty(moes_chan[0].pwmChannel, moes_duty(&moes_chan[0], gr));
 	pwmSetDuty(moes_chan[1].pwmChannel, moes_duty(&moes_chan[1], gg));
