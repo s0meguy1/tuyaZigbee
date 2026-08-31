@@ -16,10 +16,13 @@
 **ATTENTION!**
 Current version of firmware have a critical bug, making impossible next updates over OTA. If you don't have hardware programmer, do not install updated firmware until bug is fixed.
 
-## MOES experimental branch warning
+## MOES experimental firmware warning
 
-The `moes-ts0505b` branch is experimental research, not a deployable firmware
-release.
+This MOES TS0505B firmware is experimental research, not a deployable release.
+
+(Historical notes in `bughunt/` and the `*_FINDINGS.md` files refer to a
+`moes-ts0505b` branch. That was this work's branch name before it moved to
+`main`; those documents are dated records and were left as written.)
 
 Build 32 is the current tip. It has been carried further on real hardware than
 earlier builds, but the qualification below still stands in full.
