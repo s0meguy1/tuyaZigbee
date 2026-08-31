@@ -76,3 +76,11 @@ field-artifacts/*.bin
 # Do not add full local EUI-64s to artifact names. The 16 character pattern is
 # deliberately narrow so public, non-identity firmware names stay trackable.
 field-artifacts/*0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]*.zigbee
+build-23/
+build-24/
+build-25/
+build-26/
+build-27/
+build-28/
+build-29/
+build-30/

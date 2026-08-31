@@ -34,6 +34,16 @@ typedef enum {
 	MOES_EF_CHASE = 9,
 	MOES_EF_COLOR_STEP = 10,
 	MOES_EF_SNOW = 11,
+	/* Build 25. Chaotic short bursts of hard strobe with darkness between, for
+	 * a "sparks / electronics failing" look. Speed sets how often bursts land,
+	 * phase seeds WHICH moments, so a room of fixtures on different phases
+	 * scatters rather than flashing in unison. Runs entirely on the chip: one
+	 * command starts it, one stops it. */
+	MOES_EF_BURST = 12,
+	/* Build 26. One-shot bloom: golden hue swelling into full bright white, then
+	 * HELD rather than looped - the explosion at the end of the countdown. Speed
+	 * sets how violent the bloom is. Send "stop" to hand the output back. */
+	MOES_EF_EXPLODE = 13,
 	MOES_EF_MAX
 } moes_effect_e;
 

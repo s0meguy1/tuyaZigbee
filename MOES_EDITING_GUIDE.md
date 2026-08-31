@@ -180,19 +180,28 @@ Change them and every light re-appears as a new device.
 
 ## 2. The identity chain (why the light keeps its MAC)
 
-The radio's IEEE does **not** come from the conventional Telink location.
+When the MAC PIB is first constructed, the radio's IEEE is supplied by the
+TS0505B hook rather than guessed from a conventional Telink location.
 
-* `0x0FF000` — the usual Telink MAC block. On these boards it holds a value
-  that matches no valid format. **It is not the live address.**
-* `0x0FB000 + 0x58` — an ASCII EUI-64, e.g. `<redacted-device>`. **This is
-  what the radio uses.** Proven: a converted light joined with exactly this
-  value.
+* `0x0FB000 + 0xB0` — exactly 16 ASCII hex characters in **display order**,
+  e.g. `<redacted-device>`, with the Telink `a4:c1:38` OUI first.
+* The MAC PIB's `extAddress` storage is **LSB-first**.  `moes_flashGetIeee()`
+  validates the display-order factory value and reverses it before returning
+  it to the hook.  It never exposes display-order bytes to the SDK.
+* `0x0FF000` is the SDK fallback if factory parsing fails and may contain a
+  valid Telink-shuffled address. It was not used when the observed Build 20
+  identity was constructed: the live PIB bytes came from this hook.
+
+Once a valid MAC PIB is persisted in Zigbee NV, its `extAddress` is restored
+without calling `generateIEEEAddr()`. A parser correction therefore governs
+new/blank-NV conversions; it does not migrate an already-persisted identity.
 
 `build/tl_zigbee_sdk/zigbee/mac/mac_pib.c` is patched (guarded by
-`MOES_TS0505B`) to read it via `moes_flashGetIeee()`. **If you re-download
-or update the vendored SDK, this patch is lost**, every light gets a
-different randomly-derived MAC, and deployed fixtures appear as brand-new devices in
-zigbee2mqtt with dead history and broken automations.
+`MOES_TS0505B`) to call `moes_flashGetIeee()` and copy its SDK-internal,
+LSB-first bytes into `extAddress`. **If you re-download or update the vendored
+SDK, this patch is lost**, every light can acquire a different fallback MAC and
+deployed fixtures appear as brand-new devices in zigbee2mqtt with dead history
+and broken automations.
 
 Vendored SDK patches that must survive an SDK update:
 
@@ -217,8 +226,11 @@ are recorded in the table above:
   `MSPI_WAIT_MAX_ITER 20000u` (~2.5–3 ms at 48 MHz), closing the L2-a
   unbounded IRQ-off busy-wait (`HANG_FINDINGS.md` §2).
 
-`build/*` is gitignored, so these working-tree patches are not in git history;
-the table above is the durable record — re-apply them after any SDK update.
+`build/*` is gitignored, but these five SDK changes are now represented by the
+tracked `sdk_patches/telink_zigbee_sdk_0d0859e2_moes.patch` and its SHA-256
+manifest. `cmake/TelinkSDK_Linux.cmake` and `TelinkSDK_Win.cmake` verify/apply
+it after every extraction, and the TS0505B configure step rejects a missing,
+mixed, or hand-edited SDK before compilation. Do not reapply patches by hand.
 
 ---
 

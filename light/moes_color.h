@@ -27,6 +27,17 @@ extern "C" {
  * deliberately NOT derived here: the output stage applies `level` separately,
  * so only chromaticity is converted. Outputs are on the ZCL 0..0xFE scale.
  */
+/*
+ * Human units -> ZCL units, for the light-show colour datapoints (build 27).
+ *
+ * Shows are authored in degrees and percent, ZCL stores hue and saturation as
+ * 0..0xFE. Rounded, not truncated, so 360 degrees of input map evenly onto the
+ * 255 steps available and adjacent degrees do not collapse onto one value.
+ * Hue wraps (360 == 0); saturation clamps.
+ */
+unsigned char moes_hueDegToZcl(unsigned short degrees);
+unsigned char moes_satPctToZcl(unsigned char percent);
+
 void moes_xyToHueSat(unsigned short x, unsigned short y,
                      unsigned char *hue, unsigned char *saturation);
 

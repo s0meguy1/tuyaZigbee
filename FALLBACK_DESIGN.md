@@ -10,7 +10,52 @@ previous behaviour exactly (verified to build)
 
 ---
 
-## 0. The answer up front
+## Build 19 current contract (supersedes the historical rescue-mode sections below)
+
+The detailed design below records the pre-Build-18 rescue-mode experiment. It
+is retained for incident history only; its tables describing skipped init,
+output, effects, identify, persistence, and manufacturer commands are **not**
+the current firmware contract.
+
+Build 19 has these rules:
+
+- The boot-storm flag is advisory only. It may alter only OTA query cadence and
+  the join-blink pattern. It never gates application init, factory-reset
+  handling, persistence, reporting, normal light output, identify/blink,
+  effects, or manufacturer commands.
+- The liveness fuse arms after every successful BDB init callback, including a
+  factory-new/unjoined boot. A healthy commissioning scheduler advances its
+  cooperative ticker; a pre-join scheduler/timer wedge reaches the independent
+  hardware-timer reset bound.
+- Plain ZCL `On` cancels any pending `On With Timed Off` timer and clears its
+  transient `OnTime`/`OffWaitTime` state. Those fields are deliberately absent
+  from the on/off NV record and therefore never survive a boot.
+- The extended-colour endpoint exposes read/reportable `CurrentX` and
+  `CurrentY`, backed by the exact coordinates from `MoveToColor`. No unproven
+  XY-to-PWM conversion is claimed; physical colour/output is not established
+  by Zigbee attributes alone. Continuous and step XY commands remain
+  explicitly unsupported rather than reporting a successful no-op.
+- The vendored event-timer list walks have a bounded fail-closed guard. A
+  detected overlong/cyclic list posts the SDK timer exception; the registered
+  production handler resets synchronously, while an early pre-registration
+  detection takes a direct reset fallback. It is defensive hardening, not
+  proof of the physical root cause of any observed timer stall.
+
+**Verification rule:** radio connectivity, command acknowledgements, and ZCL
+reads do not verify LED output. Call a firmware output change verified only
+after visual confirmation on a fixture with LEDs or direct PWM-register
+evidence. Build 19 source/host tests are not silicon proof, mains proof, or a
+root-cause finding.
+
+---
+
+## HISTORICAL PRE-BUILD-18 RESCUE-MODE DESIGN — NOT THE CURRENT FIRMWARE CONTRACT
+
+Sections 0–9 below are retained as incident/forensic history. They describe
+the superseded minimal-output rescue mode and must not be read as Build 19
+behaviour; the current contract is the one above.
+
+### 0. The answer up front
 
 > *If the next image is bad anyway, do we get it back without a ladder?*
 
@@ -49,7 +94,7 @@ right place for it — those are the parts we do not change between releases.
 
 ---
 
-## 1. How it works
+### 1. How it works
 
 One byte, `MOES_NV_ITEM_BOOT_PROBATION 0x71`, in `NV_MODULE_APP`. It counts
 **consecutive boots that never reached a stable state**.
@@ -128,7 +173,7 @@ minute.
 
 ---
 
-## 2. What it depends on
+### 2. What it depends on
 
 Deliberately almost nothing:
 
@@ -146,7 +191,7 @@ and the OTA cluster and nothing else, good". That is what it needs.
 
 ---
 
-## 3. Bounding flash wear (requirement 5)
+### 3. Bounding flash wear (requirement 5)
 
 An NV write on every boot is fine at normal rates and not in a reset loop, so
 the counter is written **at most `MOES_RESCUE_FAIL_THRESHOLD` times, ever, per
@@ -173,7 +218,7 @@ rate that is decades.
 
 ---
 
-## 4. Failure modes
+### 4. Failure modes
 
 ### 4.1 A fault before `moes_rescueBootCheck()` — NOT COVERED
 
@@ -268,7 +313,7 @@ adding an explicit indicator in a later version (see §7).
 
 ---
 
-## 5. The watchdog (requirement 4)
+### 5. The watchdog (requirement 4)
 
 **Closed in code as of build 06** (branch `moes-ts0505b`, HEAD `07e157a`):
 `MODULE_WATCHDOG_ENABLE` is now `1` (`light/app_cfg.h:76`), the
@@ -324,7 +369,7 @@ IRQ-off ≤ ~300 ms, actual interval ≈595.3 ms) is in `bughunt/watchdog_design
 
 ---
 
-## 6. The no-bootloader dual-bank scheme — recommendation: **do not do it**
+### 6. The no-bootloader dual-bank scheme — recommendation: **do not do it**
 
 `light/moes_otaScheme.c`, behind `MOES_NOBOOT_MIGRATION`. It is genuinely
 attractive on paper — true A/B, the old image stays intact until the new one
@@ -404,7 +449,7 @@ twice. Not before.
 
 ---
 
-## 7. Testing
+### 7. Testing
 
 ### 7.1 Without hardware — done, and repeatable
 
@@ -478,7 +523,7 @@ cmake --build build --target light_TS0505B.zigbee -j8
 
 ---
 
-## 8. Honest scorecard
+### 8. Honest scorecard
 
 **What this buys:** the class of bug that has actually hurt this project —
 application code that stops the light staying up — is now recoverable over the
@@ -497,7 +542,7 @@ substitute for it. Buy one.
 
 ---
 
-## 9. Possible later work
+### 9. Possible later work
 
 Not implemented, in rough value order:
 

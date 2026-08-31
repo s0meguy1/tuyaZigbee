@@ -59,6 +59,54 @@ def recorded_sdk_additions() -> str:
     )
 
 
+class EffectWireContract(unittest.TestCase):
+    """The converter's EFFECTS index IS the datapoint value sent to the chip.
+
+    Nothing enforced that it matched moes_effect_e, so reordering or inserting
+    an entry on either side would silently fire the WRONG effect on every
+    fixture - a burst where an explosion was asked for - with no error anywhere.
+    Caught during build 26 review; the arrays happened to agree, but only by
+    hand-checking them.
+    """
+
+    ENUM = REPO_ROOT / "light" / "light_effects.h"
+    CONVERTER = REPO_ROOT / "converters" / "moes_ts0505b_light_show.js"
+
+    def _firmware_effects(self):
+        text = self.ENUM.read_text(encoding="utf-8")
+        pairs = re.findall(r"MOES_EF_([A-Z_]+)\s*=\s*(\d+)", text)
+        self.assertTrue(pairs, "no MOES_EF_* enumerators found")
+        return {int(v): n.lower() for n, v in pairs}
+
+    def _converter_effects(self):
+        text = self.CONVERTER.read_text(encoding="utf-8")
+        block = re.search(r"const EFFECTS = \[(.*?)\];", text, re.S)
+        self.assertIsNotNone(block, "EFFECTS array not found in the converter")
+        # Strip // comments FIRST: a quoted word inside a comment is not an
+        # entry, and a naive scan mis-read one during build 26.
+        clean = "\n".join(re.sub(r"//.*$", "", line) for line in block.group(1).splitlines())
+        return [m.group(1) for m in re.finditer(r"'([a-z_]+)'", clean)]
+
+    def test_converter_indices_match_the_firmware_enum(self):
+        fw = self._firmware_effects()
+        conv = self._converter_effects()
+        self.assertEqual(len(conv), len(fw),
+                         f"converter lists {len(conv)} effects, firmware defines {len(fw)}")
+        for index, name in enumerate(conv):
+            self.assertIn(index, fw, f"converter index {index} ({name}) has no enumerator")
+            expected = fw[index]
+            # MOES_EF_STEADY is exposed as "stop"; every other name matches.
+            if expected == "steady":
+                expected = "stop"
+            self.assertEqual(name, expected,
+                             f"index {index}: converter says {name!r}, firmware says {expected!r}")
+
+    def test_enum_is_dense_and_zero_based(self):
+        fw = self._firmware_effects()
+        self.assertEqual(sorted(fw), list(range(len(fw))),
+                         "moes_effect_e must stay dense and zero-based: the value is the wire format")
+
+
 class Build19SourceContracts(unittest.TestCase):
     def test_bdb_success_arms_liveness_before_join_branch(self) -> None:
         text = source("light/zb_appCb.c")

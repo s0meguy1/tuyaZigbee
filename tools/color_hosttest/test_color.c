@@ -93,6 +93,52 @@ int main(void)
     printf("  65536 combinations, all within 0..%u\n", MOES_COLOR_HUE_MAX);
 done:
 
+    printf("=== show colour units: degrees/percent -> ZCL (build 27) ===\n");
+    {
+        unsigned int d;
+        unsigned char prev;
+        int nonmono = 0;
+
+        printf("    0deg -> %u   120deg -> %u   240deg -> %u   359deg -> %u\n",
+               moes_hueDegToZcl(0), moes_hueDegToZcl(120),
+               moes_hueDegToZcl(240), moes_hueDegToZcl(359));
+        printf("    0%% -> %u    50%% -> %u    100%% -> %u\n",
+               moes_satPctToZcl(0), moes_satPctToZcl(50), moes_satPctToZcl(100));
+
+        /* The wheel must close: 360 is the same colour as 0, not a wrap to
+         * 0xFE, or a show ramping hue through a full turn would jump. */
+        if (moes_hueDegToZcl(360) != moes_hueDegToZcl(0)) {
+            printf("  FAIL: 360deg does not wrap onto 0deg\n"); failures++;
+        }
+        if (moes_hueDegToZcl(0) != 0) { printf("  FAIL: 0deg is not 0\n"); failures++; }
+        if (moes_satPctToZcl(0) != 0) { printf("  FAIL: 0%% is not 0\n"); failures++; }
+        if (moes_satPctToZcl(100) != MOES_COLOR_SAT_MAX) {
+            printf("  FAIL: 100%% is not full saturation\n"); failures++;
+        }
+        if (moes_satPctToZcl(200) != moes_satPctToZcl(100)) {
+            printf("  FAIL: saturation does not clamp\n"); failures++;
+        }
+
+        /* Monotonic and in range across every reachable input. */
+        prev = moes_hueDegToZcl(0);
+        for (d = 1; d < 360; d++) {
+            unsigned char h2 = moes_hueDegToZcl((unsigned short)d);
+            if (h2 < prev) { nonmono++; }
+            if (h2 > MOES_COLOR_HUE_MAX) {
+                printf("  FAIL: %udeg -> %u out of range\n", d, h2); failures++; break;
+            }
+            prev = h2;
+        }
+        printf("    degrees 0..359, non-monotonic steps: %d\n", nonmono);
+        if (nonmono) { printf("  FAIL: hue mapping is not monotonic\n"); failures++; }
+
+        for (d = 0; d <= 100; d++) {
+            if (moes_satPctToZcl((unsigned char)d) > MOES_COLOR_SAT_MAX) {
+                printf("  FAIL: %u%% out of range\n", d); failures++; break;
+            }
+        }
+    }
+
     if (failures) { printf("\n%d FAILING check(s)\n", failures); return 1; }
     printf("\nall colour conversion checks passed (real moes_color.c)\n");
     return 0;

@@ -145,7 +145,8 @@ extern "C" {
 
 /* Effect engine */
 #define MOES_EFFECTS_MAX                    16  /* effect ids 0..15 */
-#define MOES_EFFECT_TICK_MS                 40  /* 25 fps */
+#define MOES_EFFECT_TICK_MS                 20  /* 50 fps - 40 ms could not render
+                                                 a strobe faster than ~6 Hz */
 
 /* Disable C linkage for C++ Compilers: */
 #if defined(__cplusplus)

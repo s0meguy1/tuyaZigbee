@@ -54,6 +54,22 @@ void pwmSetDuty(u8 ch, u16 dutycycle);
 
 void light_adjust(void);
 void light_fresh(void);
+
+/* Build 25. End any in-flight level/colour transition WITHOUT touching the
+ * output, so no further transition step can run.
+ *
+ * light_fresh() stops a running effect - correct, a user command should take
+ * the output back - but light_applyUpdate() calls light_fresh() on EVERY step
+ * of a transition, so a 3 s fade calls it ~30 times over 3 s. An effect started
+ * one second after a fade was therefore killed by the tail of that fade, about
+ * 100 ms later. It looked random: start the effect after the fade finishes and
+ * it survives, start it during and it dies.
+ *
+ * lightFx_start() calls these so that starting an effect takes ownership of the
+ * output. A NEW level/colour command still stops the effect, as intended; an
+ * OLD one can no longer reach forward in time to kill it. */
+void tuyaLight_levelTransitionCancel(void);
+void tuyaLight_colorTransitionCancel(void);
 void light_applyUpdate(u8 *curLevel, u16 *curLevel256, s32 *stepLevel256, u16 *remainingTime, u8 minLevel, u8 maxLevel, bool wrap);
 void light_applyUpdate_16(u16 *curLevel, u32 *curLevel256, s32 *stepLevel256, u16 *remainingTime, u16 minLevel, u16 maxLevel, bool wrap);
 

@@ -326,6 +326,24 @@ static void tuyaLight_colorTimerStop(void)
 	}
 }
 
+/*********************************************************************
+ * @fn      tuyaLight_colorTransitionCancel
+ *
+ * @brief   See tuyaLightCtrl.h. Drops the pending steps only; hue, saturation
+ *          and colour temperature are left where the transition had reached.
+ */
+void tuyaLight_colorTransitionCancel(void)
+{
+	tuyaLight_colorTimerStop();
+
+	colorInfo.stepHue256             = 0;
+	colorInfo.stepSaturation256      = 0;
+	colorInfo.stepColorTemp256       = 0;
+	colorInfo.hueRemainingTime       = 0;
+	colorInfo.saturationRemainingTime = 0;
+	colorInfo.colorTempRemainingTime = 0;
+}
+
 #if COLOR_RGB_SUPPORT
 /*********************************************************************
  * @fn      tuyaLight_colorLoopTimerEvtCb

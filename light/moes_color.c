@@ -20,6 +20,21 @@
  *          attributes and nothing else - which is exactly what it did before
  *          this function existed.
  */
+unsigned char moes_hueDegToZcl(unsigned short degrees)
+{
+	unsigned int d = degrees % 360u;   /* 360 wraps to 0, like a colour wheel */
+
+	/* +180 rounds to nearest without floating point. */
+	return (unsigned char)(((d * MOES_COLOR_HUE_MAX) + 180u) / 360u);
+}
+
+unsigned char moes_satPctToZcl(unsigned char percent)
+{
+	unsigned int p = (percent > 100u) ? 100u : percent;
+
+	return (unsigned char)(((p * MOES_COLOR_SAT_MAX) + 50u) / 100u);
+}
+
 void moes_xyToHueSat(unsigned short x, unsigned short y,
                      unsigned char *hue, unsigned char *saturation)
 {

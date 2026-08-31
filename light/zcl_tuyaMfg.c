@@ -15,6 +15,8 @@
 #include "tuyaLightCtrl.h"
 #include "light_effects.h"
 #include "zcl_tuyaMfg.h"
+#include "moes_bootmark.h"
+#include "moes_color.h"
 
 /* ---- reportable state mirrored from the engine ---- */
 typedef struct {
@@ -24,11 +26,14 @@ typedef struct {
 }zcl_tuyaFxAttr_t;
 zcl_tuyaFxAttr_t g_zcl_tuyaFxAttrs = {0, 50, 0};
 
-#define ZCL_TUYAFX_ATTR_NUM  3
+#define ZCL_TUYAFX_ATTR_NUM  4
 static const zclAttrInfo_t tuyaFx_attrTbl[ZCL_TUYAFX_ATTR_NUM] = {
 	{ ZCL_ATTRID_TUYA_FX_EFFECT, ZCL_DATA_TYPE_UINT8,  ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_tuyaFxAttrs.effect },
 	{ ZCL_ATTRID_TUYA_FX_SPEED,  ZCL_DATA_TYPE_UINT8,  ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_tuyaFxAttrs.speed  },
 	{ ZCL_ATTRID_TUYA_FX_PHASE,  ZCL_DATA_TYPE_UINT16, ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_tuyaFxAttrs.phase  },
+	/* Build 24. Read-only and NOT reportable: it is boot-constant, so a report
+	 * configuration on it could never fire and would only waste a table slot. */
+	{ ZCL_ATTRID_TUYA_DIAG_LAST_BOOT, ZCL_DATA_TYPE_UINT8, ACCESS_CONTROL_READ, (u8*)&g_moesBootMarkPrev },
 };
 
 static void tuyaFx_stateReport(void){
@@ -106,6 +111,53 @@ static status_t tuyaMfg_cmdHandler(zclIncoming_t *pInMsg){
 			lightFx_start(g_zcl_tuyaFxAttrs.effect, g_zcl_tuyaFxAttrs.speed, g_zcl_tuyaFxAttrs.phase);
 		}
 		break;
+
+	case 0x71:   /* light-show hue, 0..359 degrees */
+	case 0x72:   /* light-show saturation, 0..100 percent */
+	{
+		/* Build 27: recolour a RUNNING effect without restarting it.
+		 *
+		 * A normal ZCL colour command cannot do this. Every colour path ends in
+		 * light_fresh(), which deliberately stops a running effect so a user
+		 * grabbing the colour picker takes the output back - correct, but it
+		 * makes "shift the sparks from blue-white to amber mid-scene"
+		 * impossible: the show restarts on every colour change.
+		 *
+		 * These datapoints write the same ZCL attributes the effects render
+		 * from (fxCurHsv reads currentHue/currentSaturation every frame) and
+		 * then deliberately do NOT call light_fresh() while an effect is
+		 * running. The next frame simply picks the new colour up - no restart,
+		 * no dropped frames, one command.
+		 *
+		 * With no effect running they behave like an ordinary colour command
+		 * and apply immediately, so they are never silently inert. */
+		zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
+
+		if(dpid == 0x71){
+			if(v32 > 359){
+				applied = FALSE;
+				break;
+			}
+			pColor->currentHue = moes_hueDegToZcl((u16)v32);
+		}else{
+			if(v32 > 100){
+				applied = FALSE;
+				break;
+			}
+			pColor->currentSaturation = moes_satPctToZcl((u8)v32);
+		}
+
+		/* Effects render from hue/saturation, so leaving the mode at XY would
+		 * let a later refresh re-derive the old hue from stale CurrentX/Y and
+		 * silently undo this. */
+		pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+		pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
+
+		if(!lightFx_active()){
+			light_fresh();
+		}
+		break;
+	}
 
 	default:
 		applied = FALSE;

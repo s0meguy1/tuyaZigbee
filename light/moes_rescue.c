@@ -117,7 +117,17 @@ void moes_rescueBootCheck(void)
 	/* Mark this boot young. The grown-up timer below clears the marker; a
 	 * boot that dies first leaves it set, which is exactly the signal the
 	 * NEXT boot uses to recognise the storm. */
-	moes_youngWrite(1);
+	/* Build 24: skip the write when the marker is ALREADY 1. It was
+	 * unconditional, so a reset loop wrote NV on every boot - ~240 writes an
+	 * hour at the 15 s period measured on 2026-08-30, thousands before anyone
+	 * noticed, each one consuming a fresh item record (nv_flashWriteNew never
+	 * compares the old value) and forcing periodic sector migration and erase.
+	 * tuyaLight.c refuses to write NV from the exception handler for exactly
+	 * this reason and this path quietly did it anyway. In a storm prevYoung is
+	 * already 1, so the steady-state cost is now zero writes. */
+	if(prevYoung != 1){
+		moes_youngWrite(1);
+	}
 	if(s_grownupTimer){
 		TL_ZB_TIMER_CANCEL(&s_grownupTimer);
 	}

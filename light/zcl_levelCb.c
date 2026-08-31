@@ -150,6 +150,21 @@ static void tuyaLight_LevelTimerStop(void)
 }
 
 /*********************************************************************
+ * @fn      tuyaLight_levelTransitionCancel
+ *
+ * @brief   See tuyaLightCtrl.h. Drops the pending steps only; the current
+ *          level attribute is left exactly where the fade had reached.
+ */
+void tuyaLight_levelTransitionCancel(void)
+{
+	zcl_levelAttr_t *pLevel = zcl_levelAttrGet();
+
+	tuyaLight_LevelTimerStop();
+	levelInfo.stepLevel256 = 0;
+	pLevel->remainingTime = 0;
+}
+
+/*********************************************************************
  * @fn      tuyaLight_moveToLevelProcess
  *
  * @brief

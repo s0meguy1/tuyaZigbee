@@ -111,6 +111,38 @@ extern "C" {
  * (bughunt/build15_runaway_cascade.md). 15 s covers the post-boot and
  * post-OTA normalization with wide margin; a genuine hang in the window is
  * still bounded by the 10 s boot interval. */
+/* MOES: 15 s. Build 23 temporarily moved this to 60 s as a DIAGNOSTIC with a
+ * falsifiable prediction; it fired, the cause is fixed in main.c, and the value
+ * is back where it belongs. The experiment is kept on the record below.
+ *
+ * Measured 2026-08-30: the pilot fixture reset-loops with a mean period of
+ * 15.11 s (n=14, 13.1-18.1, the spread being polling jitter) on clean bench
+ * 3V3 with mains disconnected and no LED load - so not the PSU, not the LED
+ * current, not the mains side. This is the ONLY 15 s constant in the whole
+ * configuration (the liveness fuse and the grown-up marker are 60 s, the boot
+ * watchdog 30 s), and at exactly this moment apps/common/main.c reprograms the
+ * watchdog from 30 s to 600 ms - the only wd_set_interval_ms() call in the tree
+ * made while the watchdog is already enabled and Timer2 is running. The other
+ * two callers both run before wd_start(), with the timer stopped; stock
+ * firmware never reprograms it at runtime at all.
+ *
+ * RESULT: the period moved to 59.50 s (n=5: 58.8, 60.6, 60.9, 59.0, 58.2),
+ * a measured ratio of 3.938 against a constant ratio of 4.000 - 1.6% off - and
+ * the first reboot landed at boot+60 s. Confirmed, so the reprogramming itself
+ * is now done safely (apps/common/main.c) and this returns to 15 s.
+ *
+ * Headroom check, because this value feeds an unguarded u32 multiply:
+ * clock_time_exceed(ref, us) compares against `us * 16` (timer.h:81 - the
+ * system tick is 16 MHz, NOT the 48 MHz CPU clock), so 60 s is 9.6e8 ticks
+ * against a u32 limit of 4.29e9, and reg_system_tick itself wraps every
+ * ~268 s. Both leave wide margin; the hard ceiling for this constant is about
+ * 268 s, beyond which the comparison silently breaks.
+ *
+ * Original build-16 rationale, still valid: the first post-boot cycles run the
+ * heaviest reporting/binding NV normalization; build 15 tightened immediately
+ * and the bench lost a module to a mid-sequence corruption cascade
+ * (bughunt/build15_runaway_cascade.md). A genuine hang inside the window is
+ * still bounded by MOES_BOOT_WATCHDOG_BOOT_MS. */
 #define MOES_BOOT_WATCHDOG_SETTLE_MS				15000
 
 /* UART module */

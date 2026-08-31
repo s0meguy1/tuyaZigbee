@@ -1,14 +1,13 @@
 --- a/tl_zigbee_sdk/apps/common/main.c
 +++ b/tl_zigbee_sdk/apps/common/main.c
-@@ -24,18 +24,62 @@
+@@ -24,17 +24,61 @@
   *******************************************************************************************************/
  
  #include "zb_common.h"
--
 +/* MOES (build 17): tighten-gate dependency. Declared here rather than
 + * pulling app headers into the SDK's common main. */
 +extern bool zb_isDeviceJoinedNwk(void);
-+
+ 
 +/* MOES PATCH (vendored SDK, 2026): the TS0505B light arrives over the air
 + * and first runs at 0x8000 under the stock Tuya bootloader. Move to the
 + * no-bootloader dual-bank scheme before anything else - RAM code only
@@ -30,7 +29,7 @@
 +#endif
 +
  	startup_state_e state = drv_platform_init();
- 
++
 +#if (MODULE_WATCHDOG_ENABLE && MOES_BOOT_WATCHDOG_ENABLE)
 +	/* MOES PATCH (vendored SDK, 2026-08-28, build 15): start a long boot
 +	 * watchdog after drv_platform_init() returns and BEFORE user_init(). Stock
@@ -45,7 +44,7 @@
 +	drv_wd_setInterval(MOES_BOOT_WATCHDOG_BOOT_MS);
 +	drv_wd_start();
 +#endif
-+
+ 
  	u8 isRetention = (state == SYSTEM_DEEP_RETENTION) ? 1 : 0;
  
 +#if (MODULE_WATCHDOG_ENABLE && MOES_BOOT_WATCHDOG_ENABLE)
@@ -56,15 +55,14 @@
 +#endif
 +
  	os_init(isRetention);
- 
++
 +#if (MODULE_WATCHDOG_ENABLE && MOES_BOOT_WATCHDOG_ENABLE)
 +	drv_wd_clear();
 +#endif
-+
+ 
  #if 0
  	extern void moduleTest_start(void);
- 	moduleTest_start();
-@@ -47,9 +91,26 @@
+@@ -47,8 +91,25 @@
  	drv_enable_irq();
  
  #if (MODULE_WATCHDOG_ENABLE)
@@ -86,12 +84,11 @@
 +	drv_wd_clear();
  	drv_wd_setInterval(600);
      drv_wd_start();
- #endif
 +#endif
+ #endif
  
  #if VOLTAGE_DETECT_ENABLE
-     u32 tick = clock_time();
-@@ -78,6 +139,22 @@
+@@ -78,6 +139,51 @@
  #if	(MODULE_WATCHDOG_ENABLE)
  		drv_wd_clear();
  #endif
@@ -106,8 +103,37 @@
 +		if(!moesWdTightened && clock_time_exceed(moesWdBootTick, MOES_BOOT_WATCHDOG_SETTLE_MS * 1000)
 +			&& zb_isDeviceJoinedNwk()){
 +			moesWdTightened = 1;
-+			drv_wd_clear();
++			/* MOES (build 24): THIS SEQUENCE WAS THE FIELD RESET LOOP.
++			 *
++			 * Reprogramming the watchdog while it is enabled and Timer2 is
++			 * running resets the chip immediately, so every joined light rebooted
++			 * exactly MOES_BOOT_WATCHDOG_SETTLE_MS after boot, forever. Proven on
++			 * hardware 2026-08-30 by MOVING the constant rather than deleting the
++			 * call: the measured reset period tracked it from 15.11 s to 59.50 s
++			 * (ratio 3.938 against a constant ratio of 4.000). This is the ONLY
++			 * wd_set_interval_ms() call in the tree made while the watchdog is
++			 * live - the two others run before wd_start(), with Timer2 stopped,
++			 * which is why stock firmware never trips over it.
++			 *
++			 * Two mechanisms fit the evidence and this closes both, because
++			 * telling them apart needs a logic analyser and the safe sequence is
++			 * identical either way:
++			 *   1. wd_set_interval_ms() clears reg_tmr2_tick to restart the count,
++			 *      but writing a RUNNING Telink timer's tick register does not
++			 *      reset it - already proven on this project for TIMER_IDX_0 in
++			 *      build 09->10 (see light/moes_liveness.c). A stale ~15 s of
++			 *      ticks against a fresh 600 ms capture fires immediately.
++			 *   2. the capture update is a non-atomic read-modify-write
++			 *      (reg_tmr_ctrl &= ~FLD_TMR_WD_CAPT, then |= value), leaving the
++			 *      capture momentarily ZERO while FLD_TMR_WD_EN is still set.
++			 *
++			 * Stop the watchdog AND Timer2 across the change, then restart: the
++			 * same stop/reload/start shape the Timer0 fix already uses. wd_start()
++			 * re-enables FLD_TMR2_EN and FLD_TMR_WD_EN together. */
++			wd_stop();
++			BM_CLR(reg_tmr_ctrl, FLD_TMR2_EN);
 +			drv_wd_setInterval(600);
++			drv_wd_clear();
 +			drv_wd_start();
 +		}
 +#endif
@@ -174,6 +200,14 @@
  #define ITEM_HDR_FIELD_VALID_CHECKCRC			0x7A
  
  
+-#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
+-#define MODULES_START_ADDR(id)					(NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * id))
+-#define NV_SECTOR_SIZE(id)						((id == NV_MODULE_KEYPAIR) ? (4 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
+-#define MODULE_INFO_SIZE(id)					((id == NV_MODULE_OTA || id == NV_MODULE_KEYPAIR || id == NV_MODULE_ADDRESS_TABLE) ? ((id == NV_MODULE_KEYPAIR) ? (12*FLASH_PAGE_SIZE) : (4*FLASH_PAGE_SIZE)) : (2*FLASH_PAGE_SIZE))
+-#else
+-#define MODULES_START_ADDR(id)					((id < 6) ? (NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * id)) : (NV_BASE_ADDRESS2 + FLASH_SECTOR_SIZE * (2 * (id-6))))
+-#define NV_SECTOR_SIZE(id)						((id == NV_MODULE_KEYPAIR) ?  (2 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
+-#define MODULE_INFO_SIZE(id)					((id == NV_MODULE_OTA || id == NV_MODULE_KEYPAIR || id == NV_MODULE_ADDRESS_TABLE) ? (4*FLASH_PAGE_SIZE) : (2*FLASH_PAGE_SIZE))
 +/* MOES PATCH (vendored SDK, 2026-08-28, build 16): every NV flash address
 + * is derived from a runtime module id, and sector numbers come from values
 + * read back out of the sector headers themselves. Stock macros turn ANY
@@ -208,14 +242,7 @@
 +	return (sectNo < MOES_NV_MODULE_SECTOR_NUM) ? sectNo : (u8)(MOES_NV_MODULE_SECTOR_NUM - 1);
 +}
 +
- #if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
--#define MODULES_START_ADDR(id)					(NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * id))
--#define NV_SECTOR_SIZE(id)						((id == NV_MODULE_KEYPAIR) ? (4 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
--#define MODULE_INFO_SIZE(id)					((id == NV_MODULE_OTA || id == NV_MODULE_KEYPAIR || id == NV_MODULE_ADDRESS_TABLE) ? ((id == NV_MODULE_KEYPAIR) ? (12*FLASH_PAGE_SIZE) : (4*FLASH_PAGE_SIZE)) : (2*FLASH_PAGE_SIZE))
--#else
--#define MODULES_START_ADDR(id)					((id < 6) ? (NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * id)) : (NV_BASE_ADDRESS2 + FLASH_SECTOR_SIZE * (2 * (id-6))))
--#define NV_SECTOR_SIZE(id)						((id == NV_MODULE_KEYPAIR) ?  (2 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
--#define MODULE_INFO_SIZE(id)					((id == NV_MODULE_OTA || id == NV_MODULE_KEYPAIR || id == NV_MODULE_ADDRESS_TABLE) ? (4*FLASH_PAGE_SIZE) : (2*FLASH_PAGE_SIZE))
++#if(FLASH_CAP_SIZE_1M || FLASH_CAP_SIZE_2M || FLASH_CAP_SIZE_4M)
 +#define MODULES_START_ADDR(id)					(NV_BASE_ADDRESS + FLASH_SECTOR_SIZE * (2 * moes_nv_module_id_checked(id)))
 +#define NV_SECTOR_SIZE(id)						((moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR) ? (4 * FLASH_SECTOR_SIZE) : FLASH_SECTOR_SIZE)
 +#define MODULE_INFO_SIZE(id)					((moes_nv_module_id_checked(id) == NV_MODULE_OTA || moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR || moes_nv_module_id_checked(id) == NV_MODULE_ADDRESS_TABLE) ? ((moes_nv_module_id_checked(id) == NV_MODULE_KEYPAIR) ? (12*FLASH_PAGE_SIZE) : (4*FLASH_PAGE_SIZE)) : (2*FLASH_PAGE_SIZE))
@@ -609,6 +636,7 @@
  
 -	if(flash_writeWithCheck((newAddr + FLASH_TLNK_FLAG_OFFSET), 1, &flashInfo) == TRUE){
 -		reboot = 1;
+-	}
 +	/*
 +	 * MOES build 08 — OTA-install fix. Never gate the install reboot on a flash
 +	 * verify. flash_writeWithCheck() is write-then-verify (proj/drivers/drv_flash.c):
@@ -669,7 +697,7 @@
 +
 +		flash_erase(MOES_OTA_DESC_ADDR);                        /* sector 0xF7000..0xF7FFF, one below board config */
 +		flash_write(MOES_OTA_DESC_ADDR, sizeof(installDesc), (u8 *)installDesc); /* 12-byte install descriptor */
- 	}
++	}
 +
 +	reboot = 1;
  #else

@@ -104,11 +104,25 @@ const EFFECTS = [
     'chase',     //  9
     'color_step', // 10
     'snow',      // 11
+    // 12. Chaotic short bursts of hard strobe with darkness between - a
+    // "sparks / failing electronics" look rather than a decorative pattern.
+    // light_show_speed sets how OFTEN bursts land (sparse even at 100);
+    // light_show_phase seeds WHICH moments, so give each fixture in a room a
+    // different phase and they scatter instead of flashing in unison.
+    'burst',
+    // 13. One-shot bloom: a golden hue swelling into full bright white, then
+    // HELD rather than looped - the explosion at the end of a countdown.
+    // light_show_speed sets how violent it is (100 = near-instant flash,
+    // 1 = slow swell). Unlike the other effects this ignores the current hue:
+    // here the colour IS the effect. Send 'stop' to hand the output back.
+    'explode',
 ];
 
 const DP_EFFECT = 0x6e;
 const DP_SPEED = 0x6f;
 const DP_PHASE = 0x70;
+const DP_HUE = 0x71;
+const DP_SATURATION = 0x72;
 
 const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 
@@ -141,7 +155,7 @@ const hasCustomFirmware = (device) => {
 };
 
 const tzLightShow = {
-    key: ['light_show', 'light_show_speed', 'light_show_phase'],
+    key: ['light_show', 'light_show_speed', 'light_show_phase', 'light_show_hue', 'light_show_saturation'],
     convertSet: async (entity, key, value, meta) => {
         if (key === 'light_show') {
             // Accept the enum name or the raw index, so an automation can use
@@ -159,6 +173,25 @@ const tzLightShow = {
             if (!Number.isFinite(speed)) throw new Error(`light_show_speed must be a number 1-100, got '${value}'`);
             await tuya.sendDataPointValue(entity, DP_SPEED, speed);
             return {state: {light_show_speed: speed}};
+        }
+
+        // Recolour a RUNNING show without restarting it. A normal `color`
+        // command cannot: every colour path ends in light_fresh(), which stops
+        // a running effect so a user grabbing the colour picker takes the
+        // output back. Correct in general, useless mid-scene. These write the
+        // same attributes the effects render from and skip that stop.
+        if (key === 'light_show_hue') {
+            const hue = clamp(Math.round(Number(value)), 0, 359);
+            if (!Number.isFinite(hue)) throw new Error(`light_show_hue must be 0-359, got '${value}'`);
+            await tuya.sendDataPointValue(entity, DP_HUE, hue);
+            return {state: {light_show_hue: hue}};
+        }
+
+        if (key === 'light_show_saturation') {
+            const sat = clamp(Math.round(Number(value)), 0, 100);
+            if (!Number.isFinite(sat)) throw new Error(`light_show_saturation must be 0-100, got '${value}'`);
+            await tuya.sendDataPointValue(entity, DP_SATURATION, sat);
+            return {state: {light_show_saturation: sat}};
         }
 
         if (key === 'light_show_phase') {
@@ -200,9 +233,19 @@ Object.assign(definition, {
                 'On-device light show (custom firmware only; does nothing on stock). ' +
                 'Renders on the chip, so it is not limited by the coordinator\'s command rate. ' +
                 'Select "stop" to hand the output back to normal on/off/brightness/colour control. ' +
+                '"burst" is deliberately mostly-dark: short chaotic strobe bursts with darkness between, ' +
+                '"explode" blooms gold into full white and then holds it. ' +
+                'driven entirely on the chip, so a whole sequence costs two Zigbee frames - one to start, one to stop. ' +
                 'Reported value is the last one commanded, not a device report.'),
         exposes.numeric('light_show_speed', ea.STATE_SET).withValueMin(1).withValueMax(100)
             .withDescription('Light show speed, 1-100 (firmware default 50). Applies immediately while a show is running.'),
+        exposes.numeric('light_show_hue', ea.STATE_SET).withValueMin(0).withValueMax(359).withUnit('°')
+            .withDescription(
+                'Colour for the colour-following effects (strobe, burst, pulse, twinkle, wave), in degrees. ' +
+                'Unlike a normal colour command this does NOT restart a running show, so a scene can shift ' +
+                'colour mid-effect. Effects that own their colour (rainbow, fire, explode, ...) ignore it.'),
+        exposes.numeric('light_show_saturation', ea.STATE_SET).withValueMin(0).withValueMax(100).withUnit('%')
+            .withDescription('Saturation for the colour-following effects, 0-100%. Does not restart a running show.'),
         exposes.numeric('light_show_phase', ea.STATE_SET).withValueMin(0).withValueMax(359).withUnit('°')
             .withDescription(
                 'Timeline offset in degrees. Give each fixture a different phase and send the same ' +

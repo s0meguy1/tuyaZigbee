@@ -40,6 +40,8 @@
 #include "app_ui.h"
 #include "factory_reset.h"
 #include "moes_flashcfg.h"
+#include "moes_bootmark.h"
+#include "moes_nvheal.h"
 #include "light_effects.h"
 #include "moes_rescue.h"
 #if ZBHCI_EN
@@ -356,6 +358,12 @@ static void tuyaLightSysException(void)
 	 * matters here. Nothing needs to be recorded: the reset itself is what
 	 * moes_rescue.c counts, on the next boot, from a context where writing
 	 * NV is safe. */
+
+	/* Build 24: record WHICH exception this was, first. One analog-register
+	 * write, no NV, safe from any fault context - which is the whole reason it
+	 * is not the NV write upstream wanted here. */
+	moes_bootMarkException();
+
 	SYSTEM_RESET();
 #else
 	zcl_onOffAttr_save();
@@ -378,6 +386,20 @@ static void tuyaLightSysException(void)
 void user_init(bool isRetention)
 {
 	(void)isRetention;
+
+#if MOES_TS0505B
+	/* FIRST, before anything can fault: latch why the PREVIOUS boot ended and
+	 * clear the register for this one. Costs two analog-register accesses and
+	 * turns an entire class of silent reset into a single over-the-air read
+	 * (attribute 0x0004 on 0xEF00). See light/moes_bootmark.h. */
+	moes_bootMarkInit();
+#endif
+
+	/* Build 30: BEFORE stack_init(), because stack_init() calls nv_init() and
+	 * the whole point is to erase the inherited stock NV before the NV layer
+	 * ever reads it. Builds 28 and 29 both erased afterwards and both failed -
+	 * see moes_nvheal.h. */
+	moes_nvHealPreStack();
 
 	/* Initialize LEDs*/
 	led_init();
@@ -403,6 +425,11 @@ void user_init(bool isRetention)
 	 * same reason, and because everything below needs to know the answer.
 	 * It uses two one-byte application items (probation and the boot-young
 	 * marker); their bounded writes are documented in moes_rescue.h. */
+	/* Build 30: the NV region was erased before stack_init() if it was foreign;
+	 * claim ownership now that nv_init() has run against it and the NV API is
+	 * coherent. No-op on a normal boot. */
+	moes_nvHealPostStack();
+
 	moes_rescueBootCheck();
 #endif
 

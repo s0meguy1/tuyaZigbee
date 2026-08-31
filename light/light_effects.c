@@ -20,7 +20,13 @@
 #include "tuyaLight.h"
 #include "tuyaLightCtrl.h"
 #include "moes_flashcfg.h"
+#include "moes_fxrate.h"
 #include "light_effects.h"
+
+/* moes_fxrate.h deliberately does not include the device config, so the tick it
+ * assumes when bounding the strobe period is pinned to the real one here - same
+ * arrangement tuyaLightCtrl.c uses for the ZCL colour constants. */
+typedef char moes_fxTickMustMatch[(MOES_EFFECT_TICK_MS == MOES_FX_TICK_MS) ? 1 : -1];
 
 moes_fx_t g_moesFx;
 
@@ -36,10 +42,9 @@ static const u16 fxSine[64] = {
 
 /* scaled time: speed 1..100 maps to a period factor, faster == smaller */
 static u32 fxPeriod(u32 slowMs){
-	/* slowMs = full cycle at speed 50 */
-	u32 sp = g_moesFx.speed ? g_moesFx.speed : 50;
-	u32 p = (slowMs * 100) / (2 * sp);
-	return p ? p : 1;
+	/* slowMs = full cycle at speed 50. Maths lives in moes_fxrate.c so the host
+	 * test executes the same object code the firmware runs. */
+	return moes_fxPeriodMs(slowMs, g_moesFx.speed);
 }
 
 /* base colour for colour-following effects: current ZCL hue/sat */
@@ -120,13 +125,59 @@ static void fxRender(u32 t){
 		break;
 
 	case MOES_EF_STROBE:
-		/* hard flash at speed: 2 Hz .. 20 Hz */
-		p = fxPeriod(1000);
+		/* Hard flash, 1 Hz at speed 1 up to 12 Hz at speed 100. Mapped by
+		 * FREQUENCY (moes_fxStrobePeriodMs) rather than by scaling a fade
+		 * cycle: the old fxPeriod(1000) gave 0.02 Hz at speed 1 and only 2 Hz
+		 * at speed 100, so even full speed never looked like a strobe. */
+		p = moes_fxStrobePeriodMs(g_moesFx.speed);
 		if((t % p) < (p >> 1)){
 			fxCurHsv(&h, &s, &v);
 			hsvToRGB(h, s, v, &r, &g, &b);
 		}
 		break;
+
+	case MOES_EF_BURST:
+		/* Mostly dark. Inside a burst slot, strobe flat out; outside one, leave
+		 * every channel at 0 so the fixture is genuinely OFF rather than dimmed
+		 * (fxCurHsv floors v at 0x20, so rendering the colour dark would still
+		 * glow). The burst/dark decision is a pure function of t, speed and
+		 * phase - see moes_fxrate.h for why it is hashed rather than random. */
+		if(moes_fxBurstActive(t, g_moesFx.speed, g_moesFx.phase)){
+			p = moes_fxStrobePeriodMs(100);   /* full rate inside the burst */
+			/* Build 26: a fixed SHORT on-time, not the strobe's 50% duty. At the
+			 * 83 ms full-rate period that was ~41 ms of light per flash, which
+			 * reads as a blink; one tick reads as a spark. One tick is also the
+			 * floor - see MOES_FX_BURST_FLASH_MS. */
+			if((t % p) < MOES_FX_BURST_FLASH_MS){
+				fxCurHsv(&h, &s, &v);
+				hsvToRGB(h, s, v, &r, &g, &b);
+			}
+		}
+		break;
+
+	case MOES_EF_EXPLODE: {
+		/* Golden bloom into full white, then held. Deliberately ignores the
+		 * current hue - unlike every other effect here, the colour IS the
+		 * effect. */
+		u32 dur = moes_fxExplodeRampMs(g_moesFx.speed);
+
+		if(t >= dur){
+			/* Hold: every channel flat out, the brightest white the fixture
+			 * can make. Held rather than looped because the scene ends lit. */
+			r = g = b = 255; cw = 255; ww = 255;
+		}else{
+			u8 k = (u8)((t * 255u) / dur);   /* 0..254 across the ramp */
+
+			/* Hue 32/255 is about 45 degrees - amber. Saturation falls to zero
+			 * as it blooms, so the colour walks gold -> white while the value
+			 * rises from black, giving a fade-IN rather than a cut. */
+			hsvToRGB(32, (u8)(255u - k), k, &r, &g, &b);
+
+			ww = k;                                     /* warm white tracks the gold */
+			cw = (k > 128u) ? (u8)((k - 128u) * 2u) : 0; /* cool white only late: the hard flash */
+		}
+		break;
+	}
 
 	case MOES_EF_WAVE:
 		/* hue oscillates around the current hue */
@@ -217,13 +268,30 @@ bool lightFx_start(u8 effect, u8 speed, u16 phase){
 		return TRUE;
 	}
 
+	/* Build 25: starting an effect takes ownership of the output. Without this,
+	 * a level/colour transition already in flight keeps stepping, and every step
+	 * calls light_fresh(), which stops the effect we are starting right here -
+	 * so an effect sent a second after a 3 s fade died ~100 ms later while the
+	 * same effect sent after the fade finished survived. See tuyaLightCtrl.h. */
+	tuyaLight_levelTransitionCancel();
+	tuyaLight_colorTransitionCancel();
+
 	g_moesFx.effect = effect;
 	g_moesFx.speed = speed ? speed : 50;
 	g_moesFx.phase = phase % 360;
 	g_moesFx.t = 0;
 
 	if(!fxTimer){
+		/* TL_ZB_TIMER_SCHEDULE returns NULL when the 24-entry pool is full.
+		 * This used to go unchecked and still return TRUE, so a failed
+		 * allocation reported success to the coordinator and rendered a single
+		 * static frame that never animated - indistinguishable from a working
+		 * effect that happens to be paused. Fail honestly instead. */
 		fxTimer = TL_ZB_TIMER_SCHEDULE(fxTick, NULL, MOES_EFFECT_TICK_MS);
+		if(!fxTimer){
+			g_moesFx.effect = MOES_EF_STEADY;
+			return FALSE;
+		}
 	}
 	fxRender(0);
 	return TRUE;
