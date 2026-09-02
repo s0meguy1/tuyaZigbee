@@ -124,17 +124,22 @@ way in is over the air.
 
 ### Status, honestly
 
-Build 36 is the current tip.
+**Build 37 is the current tip.** Build 36 introduced the light-show engine
+described above but reported its state with the wrong ZCL frame direction, so
+every report was silently discarded by the coordinator; build 37 is that one
+constant, and is the build to use.
 
 * Builds through 35 have run on a fleet of nineteen fixtures across three
   rooms, including conversions from stock, mains power cycles and day-scale
   operation.
 * The light-show engine has been exercised on hardware and measured with a
-  mains power meter; those measurements drove the build 36 rewrite.
-* Build 36 itself is newer than that: it has been installed on a bench fixture,
-  booted, and passed a scripted acceptance pass over the air covering the cue
-  list, deferred frames, state readback, the takeover policy and persistence
-  across a power cycle. It has not yet had a long soak.
+  mains power meter. Those measurements drove the build 36 rewrite, and the
+  engine's own field notes are what the feature list above was written from.
+* Build 37 has been installed on a bench fixture over a wired programmer and
+  on a ceiling fixture over the air, and has passed a scripted acceptance
+  covering the cue list, deferred frames, state readback, the takeover policy
+  and persistence across a power cycle, followed by a visual confirmation on a
+  real fixture. It has not yet had a long soak.
 
 What does **not** count as evidence here, because it misled this project
 repeatedly: a successful Zigbee command or attribute readback does not prove

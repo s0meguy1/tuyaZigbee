@@ -1,11 +1,13 @@
-# The light-show engine, build 36
+# The light-show engine, builds 36-37
 
 The on-device engine behind `light_show*` in zigbee2mqtt. This is the reference
 for anyone writing a show against it; the consumer-side summary lives on the
 Home Assistant host (`MOES_CUSTOM_FIRMWARE_CAPABILITIES_READ_FIRST.md`), the
 wire format in `light/moes_fxwire.h`, the renderers in `light/light_effects.c`.
 
-Build 36 was written against the first real show
+Build 36 introduced everything below; build 37 is a one-constant fix to the
+way reports are framed, and is the build to run. It was written against the
+first real show
 (`script.self_destruct_sequence` v3, 19 fixtures, 2026-09-02) and its wish
 list. That show needed 36 group frames and 19 unicasts on a transport measured
 at ~1.55 group frames per second, and half its design effort went into spacing
@@ -14,7 +16,7 @@ trigger.
 
 ## What changed from build 35, in one table
 
-| wish-list item | build 36 |
+| wish-list item | build 36-37 |
 |---|---|
 | 1. fixture index + effects that use it | `light_show_index` (persisted) + `light_show_spread`; phase now really offsets every periodic effect |
 | 2. deferred execution | `delay` in a `light_show_cue` frame: every member applies the frame `delay` ms after receipt |
