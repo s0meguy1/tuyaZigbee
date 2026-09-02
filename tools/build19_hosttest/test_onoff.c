@@ -38,6 +38,11 @@ void light_fresh(void)
     fresh_count++;
 }
 
+void lightFx_zclOnOff(u8 onOff)
+{
+    (void)onOff;
+}
+
 void hwLight_onOffUpdate(u8 onOff)
 {
     (void)onOff;

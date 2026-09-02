@@ -62,13 +62,14 @@ unsigned int moes_fxStrobePeriodMs(unsigned char speed);
  *
  * Time is divided into MOES_FX_BURST_SLOT_MS slots and each slot is
  * independently either a burst or dark, decided by hashing the slot index. The
- * decision is a pure function of (t, speed, phase), so:
+ * decision is a pure function of (t, threshold, seed), so:
  *   - it is stable WITHIN a slot, so a burst is a coherent flash rather than
  *     per-tick flicker;
- *   - it needs no RNG state, so it is host-testable and identical on every run;
+ *   - it needs no RNG state per frame, so it is host-testable and identical
+ *     for a given seed;
  *   - adjacent slots occasionally chain, giving the odd longer burst for free;
- *   - PHASE seeds the sequence, so fixtures given different phases burst at
- *     different moments and a room looks chaotic rather than synchronised.
+ *   - the SEED decorrelates fixtures, so a room looks chaotic rather than
+ *     synchronised (build 36 draws it per run; see below).
  *
  * The whole effect runs on the chip: one command starts it, one stops it, and
  * nothing is sent in between. Driving bursts from the coordinator instead would
@@ -110,8 +111,44 @@ unsigned char moes_fxBurstThreshold(unsigned char speed);
 
 unsigned int moes_fxExplodeRampMs(unsigned char speed);
 
+/*
+ * Build 36: density is its own control. The threshold is a 0..255 chance per
+ * slot; moes_fxBurstThreshold() derives it from speed (the build-25 behaviour,
+ * kept for density 0 = auto) and moes_fxDensityThreshold() from an explicit
+ * 1..100 percent of slots. The seed is per RUN, not per fixture layout: build 36
+ * draws it from the radio's RNG when the effect starts, so every fixture bursts
+ * on its own schedule from one group broadcast and two neighbours can never
+ * flash together by construction. (Build 25 mixed the phase in for the same
+ * purpose; with a real per-run seed the phase is free for the periodic
+ * effects, where it now means something.)
+ */
+unsigned char moes_fxDensityThreshold(unsigned char densityPct);
+
 /* Non-zero when time t falls inside a burst. Pure: same inputs, same answer. */
-int moes_fxBurstActive(unsigned int t, unsigned char speed, unsigned int phase);
+int moes_fxBurstActive(unsigned int t, unsigned char threshold, unsigned int seed);
+
+/*
+ * PHASE (build 36). Builds 27-35 stored the phase but never applied it to the
+ * timeline (measured: two fixtures at 0 and 180 degrees pulsed in unison), so a
+ * chase was impossible. A phase is now a genuine offset into the effect's own
+ * period: 180 degrees on a 4 s pulse is 2 s.
+ *
+ * The effective phase is the fixture's own phase plus index * spread. The index
+ * is set once per fixture and persisted, the spread is broadcast per show: with
+ * nineteen fixtures indexed 0..18 and a spread of 19 degrees, one group
+ * broadcast lays a full wheel across the house. index 0xFF (none) contributes
+ * nothing.
+ */
+unsigned int moes_fxEffectivePhase(unsigned int phaseDeg, unsigned char index, unsigned int spreadDeg);
+unsigned int moes_fxPhaseOffsetMs(unsigned int periodMs, unsigned int phaseDeg);
+
+/*
+ * LEVEL FADE (build 36). Linear ramp from one show level to another over
+ * fadeMs; elapsed at or beyond fadeMs returns `to`. fadeMs 0 is an instant
+ * cut. Integer only, monotonic in elapsed.
+ */
+unsigned char moes_fxFadeLevel(unsigned char from, unsigned char to,
+                               unsigned int elapsedMs, unsigned int fadeMs);
 
 #ifdef __cplusplus
 }

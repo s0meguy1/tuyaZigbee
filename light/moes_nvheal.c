@@ -3,6 +3,12 @@
  *
  * @brief   See moes_nvheal.h.
  *
+ *          MOES-DANGER (see DANGER_ZONES.md #3): NV heal erase/marker ordering.
+ *          Build 28 wrote the marker too early and corrupted the sector; build 29
+ *          guarded it with DEEP_ANA_REG, which does NOT survive SYSTEM_RESET on
+ *          this part, and the device erased and reset forever. Do not move the
+ *          erase, the marker write, or the reset relative to stack_init().
+ *
  * @date    2026
  *******************************************************************************************************/
 

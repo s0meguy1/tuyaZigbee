@@ -107,6 +107,26 @@ class EffectWireContract(unittest.TestCase):
                          "moes_effect_e must stay dense and zero-based: the value is the wire format")
 
 
+class TuyaReportDirectionContract(unittest.TestCase):
+    """A Tuya dataReport must be sent server-to-client, or it is silently lost.
+
+    zigbee-herdsman keeps dataRequest/dataQuery in a cluster's `commands` and
+    dataResponse/dataReport in its `commandsResponse`, and chooses between them
+    using the frame's direction bit. Build 36 sent the report with the
+    client-to-server bit: the payload was correct and the device answered every
+    query, but herdsman could not match command 0x02, delivered an undecoded
+    `raw` frame, and zigbee2mqtt published nothing. No error appeared anywhere.
+    Found on the first field canary; this pins the fix.
+    """
+
+    def test_report_is_sent_server_to_client(self) -> None:
+        text = source("light/zcl_tuyaMfg.c")
+        send = text.index("MOES_TUYA_CMD_DATA_REPORT")
+        call = text[send:send + 400]
+        self.assertIn("ZCL_FRAME_SERVER_CLIENT_DIR", call)
+        self.assertNotIn("ZCL_FRAME_CLIENT_SERVER_DIR", call)
+
+
 class Build19SourceContracts(unittest.TestCase):
     def test_bdb_success_arms_liveness_before_join_branch(self) -> None:
         text = source("light/zb_appCb.c")
@@ -393,6 +413,131 @@ class Build19SourceContracts(unittest.TestCase):
             r"case ZCL_CMD_LIGHT_COLOR_CONTROL_STEP_COLOR:"
             r"[\s\S]*?return ZCL_STA_UNSUP_CLUSTER_COMMAND;",
         )
+
+    def test_low_levels_are_not_floored_at_ten(self) -> None:
+        """ZCL levels 1-9 must render distinctly, not all as 10.
+
+        Upstream clamped every level below 0x0A up to 0x0A in both render
+        paths, so the bottom 4% of the dimming range collapsed to a single
+        output. That is not academic on this fleet: porch_lights_night is
+        stored at brightness 3 and was rendering at 10, and a light-show
+        fade-out stepped off instead of fading smoothly. Level 0 means Off and
+        is handled by the on/off path, so the correct floor is the ZCL minimum.
+        """
+        ctrl = source("light/tuyaLightCtrl.c")
+
+        self.assertNotIn(
+            "level = 0x0A;", ctrl,
+            "the 0x0A brightness floor collapses ZCL levels 1-9 onto 10",
+        )
+        for fn in ("hwLight_colorUpdate_colorTemperature", "hwLight_colorUpdate_HSV2RGB"):
+            body = ctrl[ctrl.index("void %s(" % fn):]
+            body = body[: body.index("\n}")]
+            self.assertIn(
+                "if(level < ZCL_LEVEL_ATTR_MIN_LEVEL){ level = ZCL_LEVEL_ATTR_MIN_LEVEL; }",
+                body,
+                f"{fn} must floor at the ZCL minimum, not 0x0A",
+            )
+
+    def test_off_state_is_applied_after_level_and_colour(self) -> None:
+        """An off lamp must end up dark whatever a level or colour update did.
+
+        This replaces a build-35 test that asserted an on/off guard inside
+        hwLight_levelUpdate(). That guard was wrong-headed: hwLight_levelUpdate()
+        has no caller on a colour light, because light_fresh() only reaches
+        tuyaLight_updateLevel() in the #else of #ifdef ZCL_LIGHT_COLOR_CONTROL,
+        and that symbol is defined for the TS0505B. Tested on real fixtures
+        against unpatched neighbours: neither an OFF scene recall nor a raw
+        MoveToLevel on a dark lamp reproduced any fault, on either build.
+
+        What actually guarantees the behaviour is ordering inside light_fresh():
+        the colour/level render runs first and tuyaLight_updateOnOff() runs
+        LAST, so an off lamp is re-zeroed afterwards. Pin that ordering, since
+        it is the real contract.
+        """
+        ctrl = source("light/tuyaLightCtrl.c")
+        body = ctrl[ctrl.index("void light_fresh(void)"):]
+        body = body[: body.index("\n}")]
+
+        self.assertIn("tuyaLight_updateOnOff();", body)
+        render = max(
+            (body.index(fn) for fn in ("tuyaLight_updateColor();", "tuyaLight_updateLevel();")
+             if fn in body),
+            default=-1,
+        )
+        self.assertNotEqual(render, -1, "light_fresh must render level or colour")
+        self.assertGreater(
+            body.index("tuyaLight_updateOnOff();"), render,
+            "tuyaLight_updateOnOff() must run AFTER the render calls, or an off "
+            "lamp can be left lit by a level or colour update",
+        )
+
+    def test_scenes_carry_colour_temperature_not_just_hue_saturation(self) -> None:
+        """A scene on an RGB+CCT light must round-trip colour temperature.
+
+        light_ts0505b.h sets BOTH COLOR_RGB_SUPPORT and COLOR_CCT_SUPPORT to 1.
+        zcl_sceneCb.c originally chose between them with #if/#elif, so on this
+        device the CCT branch was dead code: scene_store saved currentHue and
+        currentSaturation - which a MoveToColorTemperature command never
+        updates, so they held stale values - and scene_recall replayed them,
+        flipping the lamp into hue/saturation mode. Every converted fixture
+        therefore came up in an arbitrary wrong colour on a presence-driven
+        scene recall, while the colour temperature that was stored was never
+        applied at all. Stock firmware got this right, so only converted rooms
+        showed the fault.
+
+        Store and recall must stay byte-for-byte symmetric, so this pins both.
+        """
+        scenes = source("light/zcl_sceneCb.c")
+        cfg = source("device_config/light_ts0505b.h")
+
+        # The premise: this device really does declare both.
+        for flag in ("COLOR_RGB_SUPPORT", "COLOR_CCT_SUPPORT"):
+            self.assertRegex(
+                cfg,
+                rf"#define\s+{flag}\s+1",
+                f"{flag} must be 1 for TS0505B; the combined scene path assumes it",
+            )
+
+        # A bare "#if COLOR_RGB_SUPPORT" followed by "#elif COLOR_CCT_SUPPORT"
+        # is the exact shape of the bug: it silently drops CCT on this device.
+        self.assertIn(
+            "#if COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT",
+            scenes,
+            "zcl_sceneCb.c must handle RGB+CCT together, not as #if/#elif "
+            "alternatives, or scenes lose their colour temperature",
+        )
+
+        recall = scenes[scenes.index("tuyaLight_sceneRecallReqHandler(zclIncomingAddrInfo_t"):]
+        recall = recall[: recall.index("tuyaLight_sceneStoreReqHandler")]
+        store = scenes[scenes.index("tuyaLight_sceneStoreReqHandler(zcl_sceneEntry_t"):]
+
+        # Recall must read hue, saturation, a 2-byte mired value and colorMode,
+        # and must advance by the full 8-byte block (3 header + 5 payload).
+        self.assertIn("colorTemperatureMireds = BUILD_U16(pScene->extField[extLen+5], "
+                      "pScene->extField[extLen+6])", recall)
+        self.assertIn("colorMode = pScene->extField[extLen+7]", recall)
+        self.assertIn("extLen += 8;", recall)
+        self.assertIn("ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS", recall)
+        self.assertIn("ZCL_CMD_LIGHT_COLOR_CONTROL_MOVE_TO_COLOR_TEMPERATURE", recall)
+
+        # Store must write the mirror image, declaring payload length 5.
+        self.assertIn("pScene->extField[extLen++] = 5;", store)
+        self.assertIn("pScene->extField[extLen++] = pColor->currentHue;", store)
+        self.assertIn("pScene->extField[extLen++] = pColor->currentSaturation;", store)
+        self.assertIn("pScene->extField[extLen++] = LO_UINT16(pColor->colorTemperatureMireds);", store)
+        self.assertIn("pScene->extField[extLen++] = HI_UINT16(pColor->colorTemperatureMireds);", store)
+        self.assertIn("pScene->extField[extLen++] = pColor->colorMode;", store)
+
+        # on/off (4) + level (4) + colour (8) must fit ZCL_MAX_SCENE_EXT_FIELD_SIZE.
+        sdk = next(REPO_ROOT.glob("build*/tl_zigbee_sdk/zigbee/zcl/general/zcl_scene.h"), None)
+        if sdk is not None:
+            cap = re.search(r"#define\s+ZCL_MAX_SCENE_EXT_FIELD_SIZE\s+(\d+)", sdk.read_text())
+            self.assertIsNotNone(cap, "could not read ZCL_MAX_SCENE_EXT_FIELD_SIZE")
+            self.assertGreaterEqual(
+                int(cap.group(1)), 16,
+                "the extension field cannot hold on/off + level + the 8-byte colour block",
+            )
 
 
 if __name__ == "__main__":

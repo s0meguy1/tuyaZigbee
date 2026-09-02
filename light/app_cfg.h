@@ -75,7 +75,12 @@ extern "C" {
 /* Watch dog module */
 #define MODULE_WATCHDOG_ENABLE						1
 
-/* MOES: boot-phase watchdog (2026-08-28, build 15). The stock main() starts
+/* MOES-DANGER (see DANGER_ZONES.md #2): boot watchdog timing. These are NOT
+ * tuning knobs. Build 15 tightened this window immediately and the bench lost a
+ * module to a corruption cascade; a too-tight window also produced a fleet-wide
+ * reset loop (15.11 s mean period) that Zigbee2MQTT could not see at all.
+ *
+ * MOES: boot-phase watchdog (2026-08-28, build 15). The stock main() starts
  * the runtime watchdog only AFTER user_init() returns, and enables IRQs only
  * then too. A software forward-progress stall in early initialization can
  * therefore persist across a reset-pin reset if it recurs at the same point.

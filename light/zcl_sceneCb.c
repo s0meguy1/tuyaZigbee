@@ -3,6 +3,13 @@
  *
  * @brief   This is the source file for zcl_sceneCb
  *
+ *          MOES-DANGER (see DANGER_ZONES.md #5): the scene extension field layout
+ *          is persisted on the device, and store/recall must stay byte-for-byte
+ *          symmetric. A build that parses it differently from the build that
+ *          wrote it restores garbage - which shows up as lights coming on the
+ *          wrong colour, not as an error. Changing it means every scene on every
+ *          fixture must be re-stored.
+ *
  * @author  Zigbee Group
  * @date    2021
  *
@@ -62,7 +69,19 @@ static void tuyaLight_sceneRecallReqHandler(zclIncomingAddrInfo_t *pAddrInfo, zc
 #endif
 
 #ifdef ZCL_LIGHT_COLOR_CONTROL
-#if COLOR_RGB_SUPPORT
+#if COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT
+	/* An RGB+CCT light (TS0505B) defines BOTH flags. The original code chose
+	 * between them with #if/#elif, so the CCT branch was dead and a scene never
+	 * carried a colour temperature: store saved a stale currentHue/Saturation
+	 * (which a colour-temperature command never updates) and recall replayed it,
+	 * flipping the lamp into hue/sat mode. That is the "comes on the wrong
+	 * colour" fault. Carry both, plus colorMode to say which one is meaningful. */
+	u8  hue = pScene->extField[extLen+3];
+	u8  saturation = pScene->extField[extLen+4];
+	u16 colorTemperatureMireds = BUILD_U16(pScene->extField[extLen+5], pScene->extField[extLen+6]);
+	u8  colorMode = pScene->extField[extLen+7];
+	extLen += 8;
+#elif COLOR_RGB_SUPPORT
 	u8 hue = pScene->extField[extLen+3];
 	u8 saturation = pScene->extField[extLen+4];
 	extLen += 5;
@@ -82,7 +101,24 @@ static void tuyaLight_sceneRecallReqHandler(zclIncomingAddrInfo_t *pAddrInfo, zc
 #endif
 
 #ifdef ZCL_LIGHT_COLOR_CONTROL
-#if COLOR_RGB_SUPPORT
+#if COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT
+	if(colorMode == ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS){
+		zcl_colorCtrlMoveToColorTemperatureCmd_t move2ColorTemp;
+		move2ColorTemp.colorTemperature = colorTemperatureMireds;
+		move2ColorTemp.transitionTime = pScene->transTime;
+		move2ColorTemp.optPresent = 0;
+
+		tuyaLight_colorCtrlCb(pAddrInfo, ZCL_CMD_LIGHT_COLOR_CONTROL_MOVE_TO_COLOR_TEMPERATURE, &move2ColorTemp);
+	}else{
+		zcl_colorCtrlMoveToHueAndSaturationCmd_t move2HueAndSat;
+		move2HueAndSat.hue = hue;
+		move2HueAndSat.saturation = saturation;
+		move2HueAndSat.transitionTime = pScene->transTime;
+		move2HueAndSat.optPresent = 0;
+
+		tuyaLight_colorCtrlCb(pAddrInfo, ZCL_CMD_LIGHT_COLOR_CONTROL_MOVE_TO_HUE_AND_SATURATION, &move2HueAndSat);
+	}
+#elif COLOR_RGB_SUPPORT
 	zcl_colorCtrlMoveToHueAndSaturationCmd_t move2HueAndSat;
 	move2HueAndSat.hue = hue;
 	move2HueAndSat.saturation = saturation;
@@ -139,7 +175,18 @@ static void tuyaLight_sceneStoreReqHandler(zcl_sceneEntry_t *pScene)
 
 	pScene->extField[extLen++] = LO_UINT16(ZCL_CLUSTER_LIGHTING_COLOR_CONTROL);
 	pScene->extField[extLen++] = HI_UINT16(ZCL_CLUSTER_LIGHTING_COLOR_CONTROL);
-#if COLOR_RGB_SUPPORT
+#if COLOR_RGB_SUPPORT && COLOR_CCT_SUPPORT
+	/* Must mirror tuyaLight_sceneRecallReqHandler exactly: hue, saturation,
+	 * colour temperature (2 bytes), then colorMode. Total block is 3 + 5 = 8
+	 * bytes; with on/off (4) and level (4) that is 16, inside the 20-byte
+	 * ZCL_MAX_SCENE_EXT_FIELD_SIZE. */
+	pScene->extField[extLen++] = 5;
+	pScene->extField[extLen++] = pColor->currentHue;
+	pScene->extField[extLen++] = pColor->currentSaturation;
+	pScene->extField[extLen++] = LO_UINT16(pColor->colorTemperatureMireds);
+	pScene->extField[extLen++] = HI_UINT16(pColor->colorTemperatureMireds);
+	pScene->extField[extLen++] = pColor->colorMode;
+#elif COLOR_RGB_SUPPORT
 	pScene->extField[extLen++] = 2;
 	pScene->extField[extLen++] = pColor->currentHue;
 	pScene->extField[extLen++] = pColor->currentSaturation;

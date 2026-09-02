@@ -412,7 +412,11 @@ void user_init(bool isRetention)
 	stack_init();
 
 #if MOES_TS0505B
-	/* MUST come after stack_init(): nv_init() lives inside the prebuilt
+	/* MOES-DANGER (see DANGER_ZONES.md #1): boot ordering around stack_init().
+	 * Getting this wrong is a permanent boot loop recoverable only over the air.
+	 * It has already cost one ceiling light.
+	 *
+	 * MUST come after stack_init(): nv_init() lives inside the prebuilt
 	 * stack library and is called from zb_init(), so any NV access before
 	 * this point runs against an uninitialized NV subsystem. factoryRst_init()
 	 * does three NV operations and schedules a TL_ZB_TIMER; calling it early
@@ -430,6 +434,10 @@ void user_init(bool isRetention)
 	moes_nvHealPostStack();
 
 	moes_rescueBootCheck();
+
+	/* Build 36: the fixture's light-show index (one private NV byte). After
+	 * stack_init() for the same reason as everything above it. */
+	lightFx_nvLoad();
 #endif
 
 	/* Initialize user application */

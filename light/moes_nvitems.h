@@ -17,13 +17,20 @@
 #define MOES_NV_ITEM_BOOT_PROBATION    0x71
 #define MOES_NV_ITEM_BOOT_YOUNG        0x72
 #define MOES_NV_ITEM_OWNER             0x73
+/* Build 36: the fixture's light-show index, one byte (0..254, 0xFF none). Set
+ * once at commissioning; written only when it changes. */
+#define MOES_NV_ITEM_FX_INDEX          0x74
 
 #if (MOES_NV_ITEM_SKIP_RST == MOES_NV_ITEM_BOOT_PROBATION) || \
     (MOES_NV_ITEM_SKIP_RST == MOES_NV_ITEM_BOOT_YOUNG) || \
     (MOES_NV_ITEM_SKIP_RST == MOES_NV_ITEM_OWNER) || \
+    (MOES_NV_ITEM_SKIP_RST == MOES_NV_ITEM_FX_INDEX) || \
     (MOES_NV_ITEM_BOOT_PROBATION == MOES_NV_ITEM_BOOT_YOUNG) || \
     (MOES_NV_ITEM_BOOT_PROBATION == MOES_NV_ITEM_OWNER) || \
-    (MOES_NV_ITEM_BOOT_YOUNG == MOES_NV_ITEM_OWNER)
+    (MOES_NV_ITEM_BOOT_PROBATION == MOES_NV_ITEM_FX_INDEX) || \
+    (MOES_NV_ITEM_BOOT_YOUNG == MOES_NV_ITEM_OWNER) || \
+    (MOES_NV_ITEM_BOOT_YOUNG == MOES_NV_ITEM_FX_INDEX) || \
+    (MOES_NV_ITEM_OWNER == MOES_NV_ITEM_FX_INDEX)
 #error "MOES private NV item ids must be unique"
 #endif
 

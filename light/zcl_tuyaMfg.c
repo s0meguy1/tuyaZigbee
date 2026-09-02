@@ -10,171 +10,210 @@
 
 #include "../common/comm_cfg.h"
 #include "tl_common.h"
+#include "zb_api.h"
 #include "zcl_include.h"
 #include "tuyaLight.h"
 #include "tuyaLightCtrl.h"
 #include "light_effects.h"
+#include "moes_fxwire.h"
 #include "zcl_tuyaMfg.h"
 #include "moes_bootmark.h"
-#include "moes_color.h"
 
-/* ---- reportable state mirrored from the engine ---- */
-typedef struct {
-	u8  effect;
-	u8  speed;
-	u16 phase;
-}zcl_tuyaFxAttr_t;
-zcl_tuyaFxAttr_t g_zcl_tuyaFxAttrs = {0, 50, 0};
-
+/* ---- ZCL attributes: read straight from the engine's state ---- */
 #define ZCL_TUYAFX_ATTR_NUM  4
 static const zclAttrInfo_t tuyaFx_attrTbl[ZCL_TUYAFX_ATTR_NUM] = {
-	{ ZCL_ATTRID_TUYA_FX_EFFECT, ZCL_DATA_TYPE_UINT8,  ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_tuyaFxAttrs.effect },
-	{ ZCL_ATTRID_TUYA_FX_SPEED,  ZCL_DATA_TYPE_UINT8,  ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_tuyaFxAttrs.speed  },
-	{ ZCL_ATTRID_TUYA_FX_PHASE,  ZCL_DATA_TYPE_UINT16, ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_zcl_tuyaFxAttrs.phase  },
+	{ ZCL_ATTRID_TUYA_FX_EFFECT, ZCL_DATA_TYPE_UINT8,  ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_moesFx.effect },
+	{ ZCL_ATTRID_TUYA_FX_SPEED,  ZCL_DATA_TYPE_UINT8,  ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_moesFx.speed  },
+	{ ZCL_ATTRID_TUYA_FX_PHASE,  ZCL_DATA_TYPE_UINT16, ACCESS_CONTROL_READ | ACCESS_CONTROL_REPORTABLE, (u8*)&g_moesFx.phase  },
 	/* Build 24. Read-only and NOT reportable: it is boot-constant, so a report
 	 * configuration on it could never fire and would only waste a table slot. */
 	{ ZCL_ATTRID_TUYA_DIAG_LAST_BOOT, ZCL_DATA_TYPE_UINT8, ACCESS_CONTROL_READ, (u8*)&g_moesBootMarkPrev },
 };
 
-static void tuyaFx_stateReport(void){
-	/* v1: the attributes are pollable; reports fire through the normal
-	 * reporting table if z2m configures it for the cluster. */
+/* ---- deferred frame (build 36) ----
+ *
+ * A frame carrying a delay is parsed now and applied delay ms later. A group
+ * broadcast reaches every member within a few milliseconds, so members that
+ * each schedule "receipt + delay" land together far more tightly than frames
+ * that each start on arrival, and a cue can be armed slightly ahead of the
+ * moment it is needed. There is one slot: any new frame, delayed or not,
+ * replaces a pending one - the newest command always wins. */
+static moes_fxFrame_t tuyaFx_pending;
+static ev_timer_event_t *tuyaFx_delayTimer = NULL;
+
+/* ---- reports (build 36) ----
+ *
+ * Reports are a UNICAST feature. A frame addressed to this fixture arms them;
+ * a group frame disarms them. A show is driven by group broadcasts, and
+ * nineteen fixtures each answering every broadcast would be nineteen unicasts
+ * fighting the next cue for airtime, on a transport already measured at
+ * ~1.55 frames/s. Reports carry a random 150-1000 ms delay and coalesce, so a
+ * burst of unicast writes from the UI costs one report. A dataQuery is always
+ * answered, immediately, to whoever asked. */
+static bool tuyaFx_reportsArmed = FALSE;
+static u16  tuyaFx_reportAddr = 0x0000;
+static u8   tuyaFx_reportEp = 1;
+static u16  tuyaFx_reportSeq = 0;
+static ev_timer_event_t *tuyaFx_reportTimer = NULL;
+
+static void tuyaFx_reportSend(u16 dstAddr, u8 dstEp)
+{
+	u8 buf[MOES_FX_REPORT_MAX_LEN];
+	moes_fxReport_t st;
+	epInfo_t dst;
+	u32 len;
+
+	lightFx_report(&st);
+	len = moes_fxWireReportBuild(buf, sizeof(buf), tuyaFx_reportSeq++, &st);
+	if(!len){
+		return;
+	}
+
+	TL_SETSTRUCTCONTENT(dst, 0);
+	dst.dstAddrMode = APS_SHORT_DSTADDR_WITHEP;
+	dst.dstAddr.shortAddr = dstAddr;
+	dst.dstEp = dstEp;
+	dst.profileId = HA_PROFILE_ID;
+
+	/* SERVER-TO-CLIENT direction, and this is not a free choice.
+	 *
+	 * zigbee-herdsman splits a cluster's commands into `commands` (what a
+	 * gateway sends to a device) and `commandsResponse` (what a device sends
+	 * back), and it picks the table using the frame's direction bit. For
+	 * manuSpecificTuya, dataRequest(0x00) and dataQuery(0x03) are in `commands`
+	 * while dataResponse(0x01), dataReport(0x02) and the status reports are in
+	 * `commandsResponse`. A report sent with the client-to-server bit therefore
+	 * makes herdsman look for command 0x02 in the wrong table, fail to match,
+	 * and hand zigbee2mqtt an undecoded `raw` frame - which no fromZigbee
+	 * converter can act on, so the report is silently lost.
+	 *
+	 * Build 36 shipped with the wrong bit and the payload was perfect; the
+	 * fixture answered every query and nothing was ever published. Caught on
+	 * the first field canary, fixed in build 37, and pinned by a source
+	 * contract in tools/build19_hosttest.
+	 *
+	 * Cluster-specific, no manufacturer code (see zcl_tuyaMfg_register), no
+	 * default response wanted. */
+	zcl_sendCmd(TUYA_LIGHT_ENDPOINT, &dst, ZCL_CLUSTER_TUYA_EFFECT, MOES_TUYA_CMD_DATA_REPORT,
+				TRUE, ZCL_FRAME_SERVER_CLIENT_DIR, TRUE, MANUFACTURER_CODE_NONE, ZCL_SEQ_NUM,
+				(u16)len, buf);
 }
 
-/* ---- Tuya datapoint frame: [seq][dpid][type][len16BE][value] ---- */
-static status_t tuyaMfg_cmdHandler(zclIncoming_t *pInMsg){
-	if(pInMsg->hdr.cmd != 0x00 && pInMsg->hdr.cmd != 0x01){
+static s32 tuyaFx_reportTimerCb(void *arg)
+{
+	(void)arg;
+	tuyaFx_reportTimer = NULL;
+	tuyaFx_reportSend(tuyaFx_reportAddr, tuyaFx_reportEp);
+	return -1;
+}
+
+static void tuyaFx_reportSchedule(void)
+{
+	if(tuyaFx_reportTimer){
+		return;   /* coalesce */
+	}
+	tuyaFx_reportTimer = TL_ZB_TIMER_SCHEDULE(tuyaFx_reportTimerCb, NULL,
+											  150u + (u32)(zb_random() % 850u));
+}
+
+void tuyaFx_stateChanged(void)
+{
+	if(tuyaFx_reportsArmed){
+		tuyaFx_reportSchedule();
+	}
+}
+
+/* ---- frame application ---- */
+
+static s32 tuyaFx_delayTimerCb(void *arg)
+{
+	(void)arg;
+	tuyaFx_delayTimer = NULL;
+	lightFx_applyFrame(&tuyaFx_pending);
+	tuyaFx_stateChanged();
+	return -1;
+}
+
+static void tuyaFx_pendingCancel(void)
+{
+	if(tuyaFx_delayTimer){
+		TL_ZB_TIMER_CANCEL(&tuyaFx_delayTimer);
+		tuyaFx_delayTimer = NULL;
+	}
+}
+
+static int tuyaFx_cueLoadCb(void *ctx, u8 start, const u8 *entries, u8 n)
+{
+	(void)ctx;
+	return lightFx_cueLoad(start, entries, n) ? 1 : 0;
+}
+
+/* ---- Tuya datapoint frame: [seq u16][dpid][type][len16BE][value]... ---- */
+static status_t tuyaMfg_cmdHandler(zclIncoming_t *pInMsg)
+{
+	moes_fxFrame_t f;
+	moes_fxWireStatus_e st;
+	bool unicast = (pInMsg->msg->indInfo.dst_addr_mode != APS_SHORT_GROUPADDR_NOEP);
+
+	if(pInMsg->hdr.cmd == MOES_TUYA_CMD_DATA_QUERY){
+		/* "Report everything, now, to whoever asked." */
+		tuyaFx_reportSend(pInMsg->msg->indInfo.src_short_addr, pInMsg->msg->indInfo.src_ep);
+		return ZCL_STA_SUCCESS;
+	}
+	if(pInMsg->hdr.cmd != MOES_TUYA_CMD_DATA_REQUEST && pInMsg->hdr.cmd != MOES_TUYA_CMD_DATA_RESPONSE){
 		return ZCL_STA_UNSUP_CLUSTER_COMMAND;
 	}
 
-	u8 *p = pInMsg->pData;
-	u16 len = pInMsg->dataLen;
-
-	/* Tuya 0xEF00 dataRequest payload, per zigbee-herdsman
-	 * (writeListTuyaDataPointValues):
-	 *     seq   u16
-	 *     dp    u8
-	 *     type  u8
-	 *     len   u16 BIG endian
-	 *     data  len bytes
-	 * NOTE seq is TWO bytes - reading it as one shifted every field. */
-	if(len < 6){
+	/* The whole frame is parsed and validated before anything is applied, so a
+	 * frame either lands entirely or not at all. Cue-list uploads are the one
+	 * thing applied during parsing: they are data, not actions. */
+	st = moes_fxWireParse(pInMsg->pData, pInMsg->dataLen, MOES_EF_MAX, &f, tuyaFx_cueLoadCb, NULL);
+	if(st == MOES_FXW_MALFORMED){
 		return ZCL_STA_MALFORMED_COMMAND;
 	}
-
-	u8 dpid = p[2];
-	u8 type = p[3];
-	u16 vlen = ((u16)p[4] << 8) | p[5];
-	/* No (u16) cast on the sum: vlen is attacker-controlled and 6 + 0xFFFF
-	 * truncates to 5, which passes "5 > len" for every len >= 5 and lets the
-	 * v32 loop below read up to 4 bytes past the ASDU. Compare in u32. */
-	if(((u32)vlen + 6u) > (u32)len){
-		return ZCL_STA_MALFORMED_COMMAND;
-	}
-	u8 *val = p + 6;
-
-	u32 v32 = 0;
-	for(u8 i = 0; i < vlen && i < 4; i++){
-		v32 = (v32 << 8) | val[i];
+	if(st == MOES_FXW_INVALID){
+		return ZCL_STA_INVALID_VALUE;
 	}
 
-	bool applied = TRUE;
-
-	switch(dpid){
-	case 0x6E:   /* effect */
-		if(v32 >= MOES_EF_MAX){
-			applied = FALSE;
-			break;
-		}
-		lightFx_start((u8)v32, g_zcl_tuyaFxAttrs.speed, g_zcl_tuyaFxAttrs.phase);
-		g_zcl_tuyaFxAttrs.effect = (u8)v32;
-		break;
-
-	case 0x6F:   /* speed 1..100 */
-		if(v32 < 1 || v32 > 100){
-			applied = FALSE;
-			break;
-		}
-		g_zcl_tuyaFxAttrs.speed = (u8)v32;
-		if(lightFx_active()){
-			lightFx_start(g_zcl_tuyaFxAttrs.effect, g_zcl_tuyaFxAttrs.speed, g_zcl_tuyaFxAttrs.phase);
-		}
-		break;
-
-	case 0x70:   /* phase 0..359 */
-		if(v32 > 359){
-			applied = FALSE;
-			break;
-		}
-		g_zcl_tuyaFxAttrs.phase = (u16)v32;
-		if(lightFx_active()){
-			lightFx_start(g_zcl_tuyaFxAttrs.effect, g_zcl_tuyaFxAttrs.speed, g_zcl_tuyaFxAttrs.phase);
-		}
-		break;
-
-	case 0x71:   /* light-show hue, 0..359 degrees */
-	case 0x72:   /* light-show saturation, 0..100 percent */
-	{
-		/* Build 27: recolour a RUNNING effect without restarting it.
-		 *
-		 * A normal ZCL colour command cannot do this. Every colour path ends in
-		 * light_fresh(), which deliberately stops a running effect so a user
-		 * grabbing the colour picker takes the output back - correct, but it
-		 * makes "shift the sparks from blue-white to amber mid-scene"
-		 * impossible: the show restarts on every colour change.
-		 *
-		 * These datapoints write the same ZCL attributes the effects render
-		 * from (fxCurHsv reads currentHue/currentSaturation every frame) and
-		 * then deliberately do NOT call light_fresh() while an effect is
-		 * running. The next frame simply picks the new colour up - no restart,
-		 * no dropped frames, one command.
-		 *
-		 * With no effect running they behave like an ordinary colour command
-		 * and apply immediately, so they are never silently inert. */
-		zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
-
-		if(dpid == 0x71){
-			if(v32 > 359){
-				applied = FALSE;
-				break;
-			}
-			pColor->currentHue = moes_hueDegToZcl((u16)v32);
-		}else{
-			if(v32 > 100){
-				applied = FALSE;
-				break;
-			}
-			pColor->currentSaturation = moes_satPctToZcl((u8)v32);
-		}
-
-		/* Effects render from hue/saturation, so leaving the mode at XY would
-		 * let a later refresh re-derive the old hue from stale CurrentX/Y and
-		 * silently undo this. */
-		pColor->colorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
-		pColor->enhancedColorMode = ZCL_COLOR_MODE_CURRENT_HUE_SATURATION;
-
-		if(!lightFx_active()){
-			light_fresh();
-		}
-		break;
+	/* Arm or disarm reports by who sent this (see the note above). */
+	if(unicast){
+		tuyaFx_reportsArmed = TRUE;
+		tuyaFx_reportAddr = pInMsg->msg->indInfo.src_short_addr;
+		tuyaFx_reportEp = pInMsg->msg->indInfo.src_ep;
+	}else{
+		tuyaFx_reportsArmed = FALSE;
 	}
 
-	default:
-		applied = FALSE;
-		break;
+	if(st == MOES_FXW_EMPTY){
+		/* Only uploads: nothing to defer or apply. */
+		if(unicast){ tuyaFx_reportSchedule(); }
+		return ZCL_STA_SUCCESS;
 	}
 
-	if(applied){
-		tuyaFx_stateReport();
+	/* Newest command wins: a fresh frame, delayed or not, replaces a pending one. */
+	tuyaFx_pendingCancel();
+
+	if((f.present & MOES_FXF_DELAY) && f.delay){
+		tuyaFx_pending = f;
+		tuyaFx_delayTimer = TL_ZB_TIMER_SCHEDULE(tuyaFx_delayTimerCb, NULL, f.delay);
+		if(!tuyaFx_delayTimer){
+			return ZCL_STA_INSUFFICIENT_SPACE;
+		}
+		return ZCL_STA_SUCCESS;
 	}
 
-	(void)type;
-	return applied ? ZCL_STA_SUCCESS : ZCL_STA_INVALID_VALUE;
+	if(!lightFx_applyFrame(&f)){
+		return ZCL_STA_INVALID_VALUE;
+	}
+	if(unicast){
+		tuyaFx_reportSchedule();
+	}
+	return ZCL_STA_SUCCESS;
 }
 
 status_t zcl_tuyaMfg_register(u8 endpoint, u16 manuCode, u8 attrNum,
 							  const zclAttrInfo_t attrTbl[], cluster_forAppCb_t cb){
-	(void)attrNum; (void)attrTbl; (void)cb;
+	(void)attrNum; (void)attrTbl; (void)cb; (void)manuCode;
 	/* MANUFACTURER_CODE_NONE, not the Tuya code: zigbee-herdsman defines
 	 * cluster 0xEF00 with manufacturerCode undefined and therefore sends
 	 * plain (non manufacturer-specific) cluster commands. zcl.c rejects the

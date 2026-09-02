@@ -240,7 +240,13 @@ These are the parts you probably came here to edit:
 
 * **`light/light_effects.c`** — the light-show renderers. Add effects, change
   curves, tune timing. Bounded by `MOES_EF_MAX`; keep the enum and the
-  converter's `EFFECTS` array in the same order.
+  converter's `EFFECTS` array in the same order (`tools/build19_hosttest`
+  fails the build contract if they drift). Since build 36 the engine's
+  parameters, cue list and reports are described in `docs/light_show.md`;
+  the wire format is the pure `light/moes_fxwire.c` and the timing maths the
+  pure `light/moes_fxrate.c`, and both have host suites
+  (`tools/fxwire_hosttest`, `tools/fxrate_hosttest`) that run the real files.
+  Add a datapoint there first and the test will tell you what you broke.
 * **Colour maths** in `light/tuyaLightCtrl.c`: `hsvToRGB`,
   `temperatureToCW`, the gamma in `moes_outSet`, the `gmw*` white-balance
   trim. Worst case the light looks wrong and you push another update.
@@ -280,7 +286,9 @@ the boot path produces nonsense pins on a device you cannot reach.
 ### 4.4 The Tuya 0xEF00 cluster has two easy traps
 
 * the frame's `seq` is **u16**, not u8 — get this wrong and every field is
-  read one byte early
+  read one byte early; and since build 36 a frame carries SEVERAL datapoints
+  (herdsman's `dataRequest` is a list) and is applied atomically, so a parser
+  that stops after the first one silently drops the rest
 * zigbee-herdsman defines cluster `0xEF00` with **no manufacturer code**, so
   it must be registered with `MANUFACTURER_CODE_NONE`. Register it as
   manufacturer-specific and `zcl.c` rejects every command silently.

@@ -110,9 +110,9 @@ int main(void)
 		unsigned int t;
 		for(t = 0; t < SPAN; t += MOES_FX_BURST_SLOT_MS){
 			slots++;
-			on1   += moes_fxBurstActive(t, 1,   0) ? 1 : 0;
-			on50  += moes_fxBurstActive(t, 50,  0) ? 1 : 0;
-			on100 += moes_fxBurstActive(t, 100, 0) ? 1 : 0;
+			on1   += moes_fxBurstActive(t, moes_fxBurstThreshold(1),   0) ? 1 : 0;
+			on50  += moes_fxBurstActive(t, moes_fxBurstThreshold(50),  0) ? 1 : 0;
+			on100 += moes_fxBurstActive(t, moes_fxBurstThreshold(100), 0) ? 1 : 0;
 		}
 		printf("  speed   1 -> %2u%% of slots burst\n", on1   * 100u / slots);
 		printf("  speed  50 -> %2u%% of slots burst\n", on50  * 100u / slots);
@@ -136,10 +136,10 @@ int main(void)
 		unsigned int slot;
 		for(slot = 0; slot < 500u; slot++){
 			unsigned int base = slot * MOES_FX_BURST_SLOT_MS;
-			int first = moes_fxBurstActive(base, 50, 0);
+			int first = moes_fxBurstActive(base, moes_fxBurstThreshold(50), 0);
 			unsigned int off;
 			for(off = 0; off < MOES_FX_BURST_SLOT_MS; off += MOES_FX_TICK_MS){
-				if(moes_fxBurstActive(base + off, 50, 0) != first){
+				if(moes_fxBurstActive(base + off, moes_fxBurstThreshold(50), 0) != first){
 					unstable++;
 					break;
 				}
@@ -149,20 +149,94 @@ int main(void)
 		check("the burst decision never changes inside a slot", unstable == 0);
 	}
 
-	printf("=== burst is deterministic, and phase decorrelates fixtures ===\n");
+	printf("=== burst is deterministic, and the seed decorrelates fixtures ===\n");
 	{
 		int same = 1, agree = 0;
 		unsigned int i;
+		unsigned char th = moes_fxBurstThreshold(50);
 		for(i = 0; i < 1000u; i++){
 			unsigned int t = i * MOES_FX_BURST_SLOT_MS;
-			if(moes_fxBurstActive(t, 50, 0) != moes_fxBurstActive(t, 50, 0)){ same = 0; }
-			/* Neighbouring phases must not merely shift the same sequence:
-			 * two fixtures one degree apart have to burst independently. */
-			if(moes_fxBurstActive(t, 50, 0) == moes_fxBurstActive(t, 50, 1)){ agree++; }
+			if(moes_fxBurstActive(t, th, 0) != moes_fxBurstActive(t, th, 0)){ same = 0; }
+			/* Neighbouring seeds must not merely shift the same sequence:
+			 * two fixtures whose seeds differ by one have to burst independently. */
+			if(moes_fxBurstActive(t, th, 0) == moes_fxBurstActive(t, th, 1)){ agree++; }
 		}
-		printf("  phase 0 vs phase 1 agree on %u/1000 slots (chance ~85%% at this density)\n", (unsigned)agree);
+		printf("  seed 0 vs seed 1 agree on %u/1000 slots (chance ~85%% at this density)\n", (unsigned)agree);
 		check("same inputs give the same answer", same);
-		check("a different phase gives a different sequence", agree < 1000);
+		check("a different seed gives a different sequence", agree < 1000);
+	}
+
+	printf("=== burst density is its own control (build 36) ===\n");
+	{
+		const unsigned int SPAN = 3600000u;
+		unsigned int slots = 0, d1 = 0, d35 = 0, d70 = 0, d100 = 0, t;
+		for(t = 0; t < SPAN; t += MOES_FX_BURST_SLOT_MS){
+			slots++;
+			d1   += moes_fxBurstActive(t, moes_fxDensityThreshold(1),   3) ? 1 : 0;
+			d35  += moes_fxBurstActive(t, moes_fxDensityThreshold(35),  3) ? 1 : 0;
+			d70  += moes_fxBurstActive(t, moes_fxDensityThreshold(70),  3) ? 1 : 0;
+			d100 += moes_fxBurstActive(t, moes_fxDensityThreshold(100), 3) ? 1 : 0;
+		}
+		printf("  density   1 -> %3u%% of slots\n", d1 * 100u / slots);
+		printf("  density  35 -> %3u%% of slots\n", d35 * 100u / slots);
+		printf("  density  70 -> %3u%% of slots\n", d70 * 100u / slots);
+		printf("  density 100 -> %3u%% of slots\n", d100 * 100u / slots);
+		/* The field complaint: burst documented at ~35% of slots read as ~9%
+		 * duty on a wattmeter because a flash is one tick of an 83 ms period.
+		 * Density now spans the whole range so a texture is reachable. */
+		check("density 35 lands near 35% of slots", d35 * 100u / slots >= 30u && d35 * 100u / slots <= 40u);
+		check("density 70 lands near 70% of slots", d70 * 100u / slots >= 65u && d70 * 100u / slots <= 75u);
+		check("density 100 is every slot", d100 == slots);
+		check("density 1 is sparse but present", d1 > 0u && d1 * 100u / slots <= 3u);
+		check("more density means more bursts", d1 < d35 && d35 < d70 && d70 < d100);
+		check("speed-derived threshold at speed 100 matches ~35% density",
+			  moes_fxBurstThreshold(100) == MOES_FX_BURST_MAX_THRESH);
+	}
+
+	printf("=== phase is a real offset into the period (build 36) ===\n");
+	{
+		check("180 degrees on a 4000 ms period is 2000 ms", moes_fxPhaseOffsetMs(4000u, 180u) == 2000u);
+		check("0 degrees is no offset", moes_fxPhaseOffsetMs(4000u, 0u) == 0u);
+		check("360 wraps to 0", moes_fxPhaseOffsetMs(4000u, 360u) == 0u);
+		check("359 degrees is just under a period", moes_fxPhaseOffsetMs(4000u, 359u) == 3988u);
+		/* The longest period any renderer uses: rainbow (10 s at speed 50) at
+		 * speed 1 = 500 000 ms. Must not overflow. */
+		check("longest period at 359 degrees does not overflow",
+			  moes_fxPhaseOffsetMs(moes_fxPeriodMs(10000u, 1), 359u) == 498611u);
+		check("no index: effective phase is the own phase", moes_fxEffectivePhase(30u, 0xFFu, 19u) == 30u);
+		check("index 0 adds nothing", moes_fxEffectivePhase(30u, 0u, 19u) == 30u);
+		check("index 18, spread 19 = 342 + own 30 wraps to 12", moes_fxEffectivePhase(30u, 18u, 19u) == 12u);
+		check("index 254, spread 359 stays inside 0..359", moes_fxEffectivePhase(359u, 254u, 359u) < 360u);
+		{
+			/* Nineteen fixtures at spread 360/19 must land on nineteen distinct
+			 * phases spanning the wheel: that is the whole point of a chase. */
+			unsigned int seen[19], i, j, distinct = 1;
+			for(i = 0; i < 19u; i++){ seen[i] = moes_fxEffectivePhase(0u, (unsigned char)i, 19u); }
+			for(i = 0; i < 19u; i++){ for(j = i + 1; j < 19u; j++){ if(seen[i] == seen[j]){ distinct = 0; } } }
+			check("19 indexed fixtures at spread 19 get 19 distinct phases", distinct);
+			check("the last one sits at 342 degrees", seen[18] == 342u);
+		}
+	}
+
+	printf("=== level fade is linear, monotonic and lands exactly (build 36) ===\n");
+	{
+		int mono = 1;
+		unsigned int e;
+		unsigned char prevL = moes_fxFadeLevel(0, 254, 0, 3000u);
+		check("start of a fade is the origin", prevL == 0);
+		check("end of a fade is the target", moes_fxFadeLevel(0, 254, 3000u, 3000u) == 254);
+		check("past the end stays on the target", moes_fxFadeLevel(0, 254, 9000u, 3000u) == 254);
+		check("half way is half", moes_fxFadeLevel(0, 254, 1500u, 3000u) == 127);
+		check("a fade of 0 ms is a cut", moes_fxFadeLevel(0, 254, 0, 0) == 254);
+		check("fading down works", moes_fxFadeLevel(254, 0, 1500u, 3000u) == 127);
+		check("fade down ends at the target", moes_fxFadeLevel(254, 0, 3000u, 3000u) == 0);
+		check("the maximum fade length does not overflow", moes_fxFadeLevel(0, 254, 65534u, 65535u) == 254);
+		for(e = MOES_FX_TICK_MS; e <= 3000u; e += MOES_FX_TICK_MS){
+			unsigned char L = moes_fxFadeLevel(0, 254, e, 3000u);
+			if(L < prevL){ mono = 0; }
+			prevL = L;
+		}
+		check("a fade never steps backwards at the tick rate", mono);
 	}
 
 	printf("=== burst flash is a spark, not a blink, and is renderable ===\n");

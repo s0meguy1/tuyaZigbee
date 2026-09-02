@@ -33,6 +33,7 @@
 #include "zcl_include.h"
 #include "tuyaLight.h"
 #include "tuyaLightCtrl.h"
+#include "light_effects.h"
 
 /**********************************************************************
  * LOCAL CONSTANTS
@@ -133,6 +134,11 @@ static void tuyaLight_onoffApply(u8 cmd, bool cancelTimedOff)
 			pOnOff->onTime = 0;
 		}
 	}
+
+	/* Build 36: under takeover policy 1 an OFF blacks a running effect out
+	 * and an ON brings it back, instead of stopping it. light_fresh() then
+	 * leaves the output with the engine. */
+	lightFx_zclOnOff(pOnOff->onOff);
 
 	light_fresh();
 

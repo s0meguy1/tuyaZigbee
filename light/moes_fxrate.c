@@ -89,14 +89,64 @@ unsigned int moes_fxExplodeRampMs(unsigned char speed)
 		- ((unsigned int)(sp - 1u) * (MOES_FX_EXPLODE_MAX_MS - MOES_FX_EXPLODE_MIN_MS)) / 99u;
 }
 
-int moes_fxBurstActive(unsigned int t, unsigned char speed, unsigned int phase)
+unsigned char moes_fxDensityThreshold(unsigned char densityPct)
+{
+	unsigned int d = (densityPct > 100u) ? 100u : densityPct;
+
+	/* 100 percent must be every slot: 255 is the largest 8-bit hash value, and
+	 * the comparison below is strict, so map onto 0..256 and cap. */
+	unsigned int th = (d * 256u + 50u) / 100u;
+
+	return (unsigned char)((th > 255u) ? 255u : th);
+}
+
+int moes_fxBurstActive(unsigned int t, unsigned char threshold, unsigned int seed)
 {
 	unsigned int slot = t / MOES_FX_BURST_SLOT_MS;
 
-	/* Fold the phase in with an odd multiplier so neighbouring phases give
-	 * completely different sequences rather than the same one shifted by a
-	 * slot - two fixtures one degree apart must not burst together. */
-	unsigned int h = moes_fxHash32(slot ^ (phase * 2654435761u));
+	/* Fold the seed in with an odd multiplier so nearby seeds give completely
+	 * different sequences rather than the same one shifted by a slot. */
+	unsigned int h = moes_fxHash32(slot ^ (seed * 2654435761u));
 
-	return ((h & 0xffu) < moes_fxBurstThreshold(speed)) ? 1 : 0;
+	if(threshold == 255u){
+		return 1;   /* density 100: every slot, no hash can exceed 255 */
+	}
+	return ((h & 0xffu) < threshold) ? 1 : 0;
+}
+
+unsigned int moes_fxEffectivePhase(unsigned int phaseDeg, unsigned char index, unsigned int spreadDeg)
+{
+	unsigned int p = phaseDeg % 360u;
+
+	if(index != 0xFFu){
+		/* index <= 254 and spread <= 359: the product is under 92 000, far
+		 * inside 32 bits even before the modulo. */
+		p = (p + (unsigned int)index * (spreadDeg % 360u)) % 360u;
+	}
+	return p;
+}
+
+unsigned int moes_fxPhaseOffsetMs(unsigned int periodMs, unsigned int phaseDeg)
+{
+	/* The longest period any effect uses is 10 s at speed 50 and 500 s at
+	 * speed 1 (fxPeriod(10000) at sp 1 = 500 000 ms); 500 000 * 359 is 1.8e8,
+	 * inside 32 bits. */
+	return (periodMs * (phaseDeg % 360u)) / 360u;
+}
+
+unsigned char moes_fxFadeLevel(unsigned char from, unsigned char to,
+                               unsigned int elapsedMs, unsigned int fadeMs)
+{
+	unsigned int k;
+
+	if(fadeMs == 0u || elapsedMs >= fadeMs){
+		return to;
+	}
+	/* elapsed < fade <= 65535 and |to - from| <= 255: the product is under
+	 * 1.7e7. Rounded to nearest so the last step lands exactly on `to`. */
+	k = elapsedMs;
+	if(to >= from){
+		return (unsigned char)(from + ((unsigned int)(to - from) * k + fadeMs / 2u) / fadeMs);
+	}
+	return (unsigned char)(from - ((unsigned int)(from - to) * k + fadeMs / 2u) / fadeMs);
 }

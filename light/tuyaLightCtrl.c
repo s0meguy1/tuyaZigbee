@@ -52,7 +52,7 @@ typedef struct {
 
 static moes_chan_t moes_chan[5];   /* index: 0=R 1=G 2=B 3=CW 4=WW */
 static u16 moes_pwmMaxTick = PMW_MAX_TICK;
-/* Set while light_fresh() stops a running effect. lightFx_start(STEADY)
+/* Set while light_fresh() stops a running effect. lightFx_stop()
  * would otherwise call light_adjust() -> tuyaLight_colorInit(), which resets
  * the same colorInfo transition state the outer ZCL colour handler has just
  * populated. Skipping that re-init keeps the requested fade intact. */
@@ -255,6 +255,20 @@ void hwLight_levelUpdate(u8 level)
 {
 	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
 
+	/* NOT REACHED on a colour light, verified on hardware 2026-09-01.
+	 *
+	 * The only caller is tuyaLight_updateLevel(), which light_fresh() invokes
+	 * solely in the #else of #ifdef ZCL_LIGHT_COLOR_CONTROL. That symbol is
+	 * defined for the TS0505B, so this function has no caller here; the render
+	 * path is tuyaLight_updateColor() -> hwLight_colorUpdate_*().
+	 *
+	 * Recorded because build 35 briefly added an on/off guard here on the
+	 * theory that a scene stored OFF came back lit and that a group level ramp
+	 * woke dark fixtures. Both were tested on real fixtures against unpatched
+	 * neighbours and neither reproduced - because light_fresh() applies
+	 * tuyaLight_updateOnOff() LAST, so an off lamp is re-zeroed after any
+	 * level or colour work. Do not re-add a guard here expecting a behaviour
+	 * change; fix the reachable render path instead. */
 	if(pColor->colorMode == ZCL_COLOR_MODE_COLOR_TEMPERATURE_MIREDS){
 		hwLight_colorUpdate_colorTemperature(pColor->colorTemperatureMireds, level);
 	}else{
@@ -289,7 +303,12 @@ void hwLight_colorUpdate_colorTemperature(u16 colorTemperatureMireds, u8 level)
 	u8 C = 0;
 	u8 W = 0;
 
-	if(level < 0x0A){ level = 0x0A; }
+	/* Upstream clamped every level below 0x0A up to 0x0A, so ZCL levels 1-9 all
+	 * rendered identically at 10. That is a real fidelity loss on this fleet:
+	 * porch_lights_night is stored at brightness 3 and was rendering at 10, and
+	 * a light-show fade-out stepped off instead of fading. Honour the ZCL
+	 * minimum instead; level 0 is Off and is handled by the on/off path. */
+	if(level < ZCL_LEVEL_ATTR_MIN_LEVEL){ level = ZCL_LEVEL_ATTR_MIN_LEVEL; }
 
 	temperatureToCW(colorTemperatureMireds, level, &C, &W);
 	moes_outSet(0, 0, 0, C, W);
@@ -355,7 +374,10 @@ void hwLight_colorUpdate_HSV2RGB(u8 hue, u8 saturation, u8 level)
 {
 	u8 R = 0, G = 0, B = 0;
 
-	if(level < 0x0A){ level = 0x0A; }
+	/* Same upstream 0x0A floor as the colour-temperature path; see the comment
+	 * there. Kept symmetric so a dim RGB scene and a dim CCT scene behave the
+	 * same way. */
+	if(level < ZCL_LEVEL_ATTR_MIN_LEVEL){ level = ZCL_LEVEL_ATTR_MIN_LEVEL; }
 
 	hsvToRGB(hue, saturation, level, &R, &G, &B);
 	moes_outSet(R, G, B, 0, 0);
@@ -384,9 +406,9 @@ void light_fresh(void)
 {
 	/* Re-entry guard. light_adjust() -> tuyaLight_colorInit() ->
 	 * light_applyUpdate() -> light_fresh() is a real cycle when light_adjust()
-	 * runs outside the effect-stop path (boot, or lightFx_start(STEADY) from
+	 * runs outside the effect-stop path (boot, or lightFx_stop() from
 	 * the effect command). The effect-stop path below sets lightFreshStopFx so
-	 * lightFx_start(STEADY) does not re-enter through light_adjust(), but keep
+	 * lightFx_stop() does not re-enter through light_adjust(), but keep
 	 * the explicit bound for the remaining paths instead of relying on
 	 * statement order in another file. */
 	static u8 inLightFresh = 0;
@@ -400,10 +422,21 @@ void light_fresh(void)
 	/* Any ZCL-driven update is an explicit user action: it takes the
 	 * output back from a running effect. Stop the effect quietly: the
 	 * transition state in colorInfo belongs to the colour command that is
-	 * being processed, so light_adjust() must not re-init it here. */
+	 * being processed, so light_adjust() must not re-init it here.
+	 *
+	 * Build 36: unless the show asked to hold the output (takeover policy 1).
+	 * Then the ZCL attributes have already been updated by the caller and are
+	 * simply not rendered: the effect keeps the LEDs, reads the new values on
+	 * its next frame where it follows them, and the fixture lands on them
+	 * when the effect stops. Persist them as usual. */
 	if(lightFx_active()){
+		if(lightFx_holdsOutput()){
+			gLightCtx.lightAttrsChanged = TRUE;
+			inLightFresh--;
+			return;
+		}
 		lightFreshStopFx = TRUE;
-		lightFx_start(MOES_EF_STEADY, g_moesFx.speed, g_moesFx.phase);
+		lightFx_stop(TRUE);
 		lightFreshStopFx = FALSE;
 	}
 
