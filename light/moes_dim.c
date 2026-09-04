@@ -5,6 +5,13 @@
  *          makes tools/level_curve_hosttest able to execute the real firmware
  *          arithmetic instead of a copy of it.
  *
+ *          Build 40: the curve deliberately keeps brightmin's 1% floor for a
+ *          lit channel and does NOT ramp it out below one level. That floor is
+ *          stock's own (factory block brightmin:1) and stock ran this hardware
+ *          for nine months without the fade artefact. Going below it means
+ *          sub-2.5 us on-times at 4 kHz, which the driver was observed not to
+ *          hold cleanly.
+ *
  * @date    2026
  *******************************************************************************************************/
 #include "moes_dim.h"

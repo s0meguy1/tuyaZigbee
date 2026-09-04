@@ -62,6 +62,12 @@ typedef struct{
 	u8	withOnOff;
 	/* Whether this command has already issued its with-on-off Off. */
 	u8	offSent;
+	/* Build 39. Perceptual pacing of a transition, for commands that have an
+	 * explicit destination. See tuyaLight_levelPaced(). */
+	u16 startLevel256;
+	u16 targetLevel256;
+	u16 stepsTotal;
+	u8	paced;
 }zcl_levelInfo_t;
 
 /**********************************************************************
@@ -75,6 +81,10 @@ static zcl_levelInfo_t levelInfo = {
 	.hasTarget			= 0,
 	.withOnOff			= 0,
 	.offSent			= 0,
+	.startLevel256		= 0,
+	.targetLevel256		= 0,
+	.stepsTotal			= 0,
+	.paced				= 0,
 };
 
 static ev_timer_event_t *levelTimerEvt = NULL;
@@ -149,11 +159,91 @@ u16 tuyaLight_levelWiden(u8 level)
 	 * under one. Beyond that the accumulator is stale, because something wrote
 	 * curLevel directly: scene recall, a Tuya datapoint and the effect-stop
 	 * path all do. Render the attribute rather than a stale sub-level. */
-	if(diff < 256){
+	/* Inclusive at exactly one level: an extinction ends with the accumulator
+	 * at 0 while the attribute is clamped at the ZCL minimum of 1, which is a
+	 * difference of exactly 256. An exclusive test falls back there and
+	 * renders the dimmest LIT value as the final frame before the cut, which
+	 * is the whole cliff this was meant to remove. A live ramp is never more
+	 * than 255 away, so nothing else changes. */
+	if(diff <= 256){
 		return levelInfo.currentLevel256;
 	}
 
 	return ((u16)level) << 8;
+}
+
+/*********************************************************************
+ * @fn      tuyaLight_levelPaced
+ *
+ * @brief   Where the ramp should be, this tick, for a perceptually even fade.
+ *
+ *          Build 38 made the fade smooth in the sense that matters to an
+ *          instrument: 250 output updates instead of 50, and every level
+ *          distinct. Watched by a person it still ended in a cliff, and the
+ *          arithmetic says why. Perceived brightness goes roughly as the cube
+ *          root of light output, so a ramp that is linear in LEVEL spends
+ *          almost all of its visible change in the last moments. Fading 254
+ *          to 1 over 8 s, the bottom ten levels - which carry as much
+ *          apparent change as the top hundred - go by in 0.3 s, and then the
+ *          with-on-off Off cuts 1.3% duty straight to black.
+ *
+ *          So move the level along a cubic in TIME. Perceived brightness then
+ *          falls at an even rate, the fixture spends real time at the bottom
+ *          of its range, and the final step to off arrives after a slow crawl
+ *          instead of a plunge.
+ *
+ *          This is NOT the perceptual curve that section 3 of the build 38
+ *          brief forbids, and the distinction is the whole point. That
+ *          prohibition is on the level-to-output MAPPING: level 127 must keep
+ *          rendering exactly as it does today, or every stored scene shifts
+ *          and the converted fixtures stop matching the stock ones beside
+ *          them. Nothing here touches that mapping. Level 127 renders
+ *          identically; only the MOMENT the fade passes through 127 changes.
+ *          Steady state is untouched, so scenes and the stock match are safe.
+ *
+ *          The cost is that a transition is no longer linear in level over
+ *          time, which is what a literal reading of the ZCL Level Control
+ *          cluster describes. Real dimmable fixtures commonly do this; it is
+ *          a deliberate trade of specification literalism for the thing a
+ *          person actually asked for.
+ *
+ *          Only commands with an explicit destination are paced. A rate-based
+ *          Move means "travel at this rate until told to stop", and pacing it
+ *          would violate the rate the caller asked for.
+ */
+static u16 tuyaLight_levelPaced(void)
+{
+	u32 x;
+	u32 f;
+	u32 mag;
+	s32 span;
+	u8  neg;
+
+	if(levelInfo.stepsTotal == 0){
+		return levelInfo.targetLevel256;
+	}
+
+	/* Fraction of the transition still to run, 0..1024. */
+	x = ((u32)levelInfo.stepsRemaining * 1024u) / (u32)levelInfo.stepsTotal;
+
+	span = (s32)levelInfo.startLevel256 - (s32)levelInfo.targetLevel256;
+	neg = (span < 0);
+	mag = (u32)(neg ? -span : span);
+
+	/* mag * x^3, applied one factor at a time.
+	 *
+	 * Cubing x on its own first is what a naive reading suggests and it is
+	 * wrong here: x^3 normalised back to 0..1024 has no resolution left near
+	 * zero, so the last tenth of the fade truncated to exactly zero and the
+	 * fixture sat black for the final 800 ms. Multiplying the (large) span in
+	 * before each shift keeps the low end alive. The widest intermediate is
+	 * 65280 * 1024, well inside a u32. */
+	f = mag;
+	f = (f * x) >> 10;
+	f = (f * x) >> 10;
+	f = (f * x) >> 10;
+
+	return (u16)((s32)levelInfo.targetLevel256 + (neg ? -(s32)f : (s32)f));
 }
 
 /*********************************************************************
@@ -165,12 +255,68 @@ static void tuyaLight_levelApply(void)
 {
 	zcl_levelAttr_t *pLevel = zcl_levelAttrGet();
 
-	/* light_applyUpdate() decrements whatever counter it is given, and calls
-	 * light_fresh(). Give it the tick counter rather than the ZCL attribute -
-	 * that is the whole of build 38's part A, and it means the shared function
-	 * and its host-test stub keep their signatures. */
-	light_applyUpdate(&pLevel->curLevel, &levelInfo.currentLevel256, &levelInfo.stepLevel256,
-					&levelInfo.stepsRemaining, ZCL_LEVEL_ATTR_MIN_LEVEL, ZCL_LEVEL_ATTR_MAX_LEVEL, FALSE);
+	if(levelInfo.paced){
+		/* Position is computed from the tick index, not accumulated, so there
+		 * is no truncation to drift and the ramp lands on the target exactly.
+		 * Both endpoints are already inside [MIN,MAX], so the interpolated
+		 * value is too and needs no clamp. */
+		u16 want;
+
+		if(levelInfo.stepsRemaining){
+			levelInfo.stepsRemaining--;
+		}
+		want = tuyaLight_levelPaced();
+
+		/* Round the way light_applyUpdate() would for this direction, so a
+		 * paced ramp and a linear one report the same attribute. */
+		if(levelInfo.targetLevel256 >= levelInfo.startLevel256){
+			pLevel->curLevel = (u8)((want + 127) >> 8);
+		}else{
+			pLevel->curLevel = (u8)(want >> 8);
+		}
+		/* The ZCL attribute must never read below the level that was
+		 * commanded, even while the rendered output continues below it during
+		 * an extinction. Reporting level 0 with the light still on is simply
+		 * wrong, and Zigbee2MQTT records it as the fixture's state. */
+		if((levelInfo.targetLevel256 <= levelInfo.startLevel256) &&
+		   (pLevel->curLevel < levelInfo.targetLevel)){
+			pLevel->curLevel = levelInfo.targetLevel;
+		}
+		levelInfo.currentLevel256 = want;
+
+		if(levelInfo.stepsRemaining == 0){
+			levelInfo.stepLevel256 = 0;
+		}
+
+		light_fresh();
+
+		if(levelInfo.stepsRemaining == 0){
+			/* End of a paced ramp. When it was paced all the way to black, the
+			 * output is already there, so switch off BEFORE restoring the ZCL
+			 * attribute to the commanded level. Doing it the other way round
+			 * renders one 20 ms frame back up at the dimmest lit value - a
+			 * visible blip at the very end of an otherwise clean fade. */
+			if(levelInfo.targetLevel256 == 0){
+				if(levelInfo.withOnOff && !levelInfo.offSent){
+					levelInfo.offSent = TRUE;
+					tuyaLight_onoff(ZCL_CMD_ONOFF_OFF);
+				}
+				if(levelInfo.hasTarget){
+					pLevel->curLevel = levelInfo.targetLevel;
+					levelInfo.currentLevel256 = ((u16)levelInfo.targetLevel) << 8;
+				}
+			}
+			levelInfo.hasTarget = FALSE;
+			levelInfo.paced = FALSE;
+		}
+	}else{
+		/* light_applyUpdate() decrements whatever counter it is given, and
+		 * calls light_fresh(). Give it the tick counter rather than the ZCL
+		 * attribute - that is the whole of build 38's part A, and it means the
+		 * shared function and its host-test stub keep their signatures. */
+		light_applyUpdate(&pLevel->curLevel, &levelInfo.currentLevel256, &levelInfo.stepLevel256,
+						&levelInfo.stepsRemaining, ZCL_LEVEL_ATTR_MIN_LEVEL, ZCL_LEVEL_ATTR_MAX_LEVEL, FALSE);
+	}
 
 	/* Land exactly on the commanded level.
 	 *
@@ -205,6 +351,14 @@ static void tuyaLight_levelWithOnOffChk(void)
 {
 	zcl_levelAttr_t *pLevel = zcl_levelAttrGet();
 
+	/* A paced extinction switches off at the end of its own ramp, once the
+	 * output has actually reached black. This test must not also run for it:
+	 * the attribute clamps at the minimum early by design, so firing here
+	 * would cut the light most of a fade too soon. */
+	if(levelInfo.paced && (levelInfo.targetLevel256 == 0)){
+		return;
+	}
+
 	if(levelInfo.withOnOff && !levelInfo.offSent &&
 	   (pLevel->curLevel == ZCL_LEVEL_ATTR_MIN_LEVEL)){
 		levelInfo.offSent = TRUE;
@@ -229,6 +383,7 @@ void tuyaLight_levelInit(void)
 
 	levelInfo.stepsRemaining = 0;
 	levelInfo.hasTarget = FALSE;
+	levelInfo.paced = FALSE;
 	levelInfo.currentLevel256 = (u16)(pLevel->curLevel) << 8;
 
 	/* A zero counter makes light_applyUpdate() snap and render without
@@ -308,6 +463,7 @@ void tuyaLight_levelTransitionCancel(void)
 	levelInfo.stepLevel256 = 0;
 	levelInfo.stepsRemaining = 0;
 	levelInfo.hasTarget = FALSE;
+	levelInfo.paced = FALSE;
 	pLevel->remainingTime = 0;
 }
 
@@ -336,6 +492,22 @@ static void tuyaLight_moveToLevelProcess(u8 cmdId, moveToLvl_t *cmd)
 	levelInfo.stepLevel256 = ((s32)(cmd->level - pLevel->curLevel)) << 8;
 	levelInfo.stepLevel256 /= (s32)levelInfo.stepsRemaining;
 
+	levelInfo.startLevel256 = (u16)(pLevel->curLevel) << 8;
+	levelInfo.targetLevel256 = ((u16)cmd->level) << 8;
+	/* Build 40. The ramp stops at the dimmest LIT value and cuts from there,
+	 * which is what stock does: its factory block sets brightmin:1, so a lit channel
+	 * never goes below 1% duty and off is a step from there.
+	 *
+	 * An earlier build 39 paced the output below that, all the way to zero, on
+	 * the theory that fading out beat cutting. It is a region stock never
+	 * drives - under 1% duty is an on-time below ~2.5 us at 4 kHz - and the
+	 * field trace found the fade dwelling there with unstable output. Stock
+	 * ran this hardware for nine months without the artefact, so match its
+	 * floor rather than inventing a lower one. If the last step is ever worth
+	 * softening, measure the driver's minimum stable duty first. */
+	levelInfo.stepsTotal = levelInfo.stepsRemaining;
+	levelInfo.paced = TRUE;
+
 	tuyaLight_levelApply();
 
 	if(levelInfo.withOnOff){
@@ -348,7 +520,11 @@ static void tuyaLight_moveToLevelProcess(u8 cmdId, moveToLvl_t *cmd)
 		 * still turns off only when a move actually reaches minimum. */
 		if(cmd->level > ZCL_LEVEL_ATTR_MIN_LEVEL){
 			tuyaLight_onoff(ZCL_CMD_ONOFF_ON);
-		}else if(pLevel->curLevel == ZCL_LEVEL_ATTR_MIN_LEVEL){
+		}else if((pLevel->curLevel == ZCL_LEVEL_ATTR_MIN_LEVEL) && !levelInfo.offSent){
+			/* Still exactly once. A paced extinction that completes inside this
+			 * same call has already switched off, and curLevel has by then been
+			 * restored to the commanded minimum, so an unguarded test here
+			 * sends a second Off. */
 			levelInfo.offSent = TRUE;
 			tuyaLight_onoff(ZCL_CMD_ONOFF_OFF);
 		}
@@ -417,6 +593,7 @@ static void tuyaLight_moveProcess(u8 cmdId, move_t *cmd)
 
 	levelInfo.targetLevel = newLevel;
 	levelInfo.hasTarget = TRUE;
+	levelInfo.paced = FALSE;   /* a rate-based Move must honour its rate */
 	levelInfo.stepLevel256 = ((s32)(newLevel - pLevel->curLevel)) << 8;
 	levelInfo.stepLevel256 /= (s32)levelInfo.stepsRemaining;
 
@@ -479,6 +656,11 @@ static void tuyaLight_stepProcess(u8 cmdId, step_t *cmd)
 	levelInfo.targetLevel = (u8)target;
 	levelInfo.hasTarget = TRUE;
 
+	levelInfo.startLevel256 = (u16)(pLevel->curLevel) << 8;
+	levelInfo.targetLevel256 = ((u16)target) << 8;
+	levelInfo.stepsTotal = levelInfo.stepsRemaining;
+	levelInfo.paced = TRUE;
+
 	tuyaLight_levelApply();
 
 	tuyaLight_levelWithOnOffChk();
@@ -510,6 +692,7 @@ static void tuyaLight_stopProcess(u8 cmdId, stop_t *cmd)
 
 	levelInfo.stepsRemaining = 0;
 	levelInfo.hasTarget = FALSE;
+	levelInfo.paced = FALSE;
 	levelInfo.stepLevel256 = 0;
 	levelInfo.currentLevel256 = ((u16)pLevel->curLevel) << 8;
 }
