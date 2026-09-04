@@ -29,7 +29,8 @@ seconds later, and was fully functional.
 ### Timing matters
 
 Zigbee2MQTT **caps permit-join at 254 seconds** and rejects any longer request
-outright. A conversion transfer takes roughly 25–60 minutes. So a window opened
+outright. A conversion transfer takes roughly 35–85 minutes (four measured here: 36, 83,
+84 and 84 minutes). Custom-to-custom updates are far quicker, around 25. So a window opened
 when you start the transfer is always long gone by the time the device needs it.
 
 **Open the window after the install completes, not before the transfer.**

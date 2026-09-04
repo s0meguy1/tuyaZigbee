@@ -122,6 +122,67 @@ way in is over the air.
 * SDK-side fixes for the install commit path and an unbounded flash busy-wait
   travel with the tree as a verified patch set, not as hand edits.
 
+### Installing it
+
+Every build emits **two** containers, and picking the wrong one wastes a transfer:
+
+| file | mfg / image type / version | use it for |
+|---|---|---|
+| `light_TS0505B.zigbee` | `0x6464` / `0x0395` / build version | custom → custom updates |
+| `light_TS0505B.tuya.zigbee` | `0x1141` / `0xD3A3` / `0xFFFFFFFF` | **converting a stock fixture** |
+
+The conversion container deliberately masquerades as a stock Tuya image. That is
+what makes a stock device accept it — and it is exactly why it must **never** go
+in a shared OTA index, because it also matches every other stock fixture on your
+mesh. Deliver it by explicit per-device URL:
+
+```
+topic:   zigbee2mqtt/bridge/request/device/ota_update/update
+payload: {"id": "<ieee>", "url": "http://<host>:<port>/<file>.zigbee"}
+```
+
+`ota_update/check` does not honour `url` and will fail against your configured
+index — use `update` directly. Serve over plain HTTP from a host Zigbee2MQTT can
+reach, and verify the sha256 at both ends. An image without recorded provenance
+has bricked a fixture on this project.
+
+Zigbee2MQTT also wants a few minutes of uptime before it will honour an
+explicit-url update, and **never run two transfers at once** — concurrent OTAs
+blew the coordinator's serial deadline here.
+
+#### The one step that catches everyone
+
+**Conversion erases NV, and your Zigbee network credentials live in that NV.**
+The fixture must therefore **rejoin**, and you have to open permit-join *after
+the install finishes*.
+
+Until you do, a perfectly healthy fixture is indistinguishable from a dead one:
+interview incomplete, every ZCL read timing out, nothing useful in the log.
+
+Zigbee2MQTT **caps permit-join at 254 seconds** and rejects any longer request
+outright, while a conversion takes roughly 35–85 minutes. So a window opened
+when you start the transfer is always long gone by the time the device needs it.
+
+```
+topic:   zigbee2mqtt/bridge/request/permit_join
+payload: {"time": 254}
+```
+
+Read `zigbee2mqtt/bridge/response/permit_join` and confirm it reports
+`"status":"ok"`. A window you believe is open but is not will send you hunting
+imaginary firmware bugs. This one step cost more time on this project than any
+actual firmware bug.
+
+A `device_leave` immediately after the install is **expected**, not a fault.
+
+**Custom-to-custom updates need none of this.** NV is preserved, the fixture
+keeps its address, interview and Home Assistant history, and permit-join stays
+closed throughout.
+
+Full procedure — including the SWire backup that is the only thing making this
+reversible — is in
+[docs/moes_ts0505b_conversion.md](docs/moes_ts0505b_conversion.md).
+
 ### Status, honestly
 
 **Build 37 is the current tip.** Build 36 introduced the light-show engine
@@ -139,7 +200,14 @@ constant, and is the build to use.
   on a ceiling fixture over the air, and has passed a scripted acceptance
   covering the cue list, deferred frames, state readback, the takeover policy
   and persistence across a power cycle, followed by a visual confirmation on a
-  real fixture. It has not yet had a long soak.
+  real fixture.
+* It has since been rolled out over the air across the whole fleet, one fixture
+  at a time. Seventeen of eighteen updated unattended overnight with no
+  intervention. One stalled partway and resumed from its checkpoint on a retry;
+  a second refused to begin a transfer at all until its mains supply was
+  cycled, after which it also resumed rather than starting over. No fixture was
+  lost, and a failed transfer left its light running the build it already had.
+* It has not yet had a long soak.
 
 What does **not** count as evidence here, because it misled this project
 repeatedly: a successful Zigbee command or attribute readback does not prove
