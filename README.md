@@ -25,6 +25,31 @@ installed over the air, keeps the stock Tuya bootloader, and preserves the
 fixture's identity so zigbee2mqtt and Home Assistant see the same device
 afterwards.
 
+### What it looks like
+
+Both clips are one bench fixture running the on-device light-show engine. The
+effect is rendered on the chip; the network is only told *which* effect to run,
+not fed a frame at a time. One group broadcast runs a whole room.
+
+| flash | multi-scene |
+| :---: | :---: |
+| ![A downlight strobing red on a bench](media/light-show-flash.gif) | ![A downlight stepping through red, cyan and green](media/light-show-multi-scene.gif) |
+
+### The hardware
+
+The exact parts this was built for. No affiliation, no referral codes — they are
+here so you can check you have the same board before flashing anything.
+
+- **The light** — Moes ZB-TDD6-RCW-4 RGB+CCT downlight:
+  <https://www.aliexpress.us/item/3256806801178235.html>
+- **The bare module** — Tuya ZT3L (Telink TLSR8258), for a spare or a repair:
+  <https://www.aliexpress.us/item/3256809199488861.html>
+
+Sellers change what a listing ships without changing the listing. Confirm before
+you flash: Zigbee2MQTT should report the device as `TS0505B` /
+`_TZ3210_b8jdosxo`, its IEEE address should begin `0xa4c138` (a Telink chip),
+and the module inside should be marked `ZT3L`.
+
 ### The on-device light-show engine
 
 The headline feature, and the reason the rest of this exists. Fifteen effects
