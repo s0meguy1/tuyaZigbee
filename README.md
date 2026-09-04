@@ -124,6 +124,31 @@ way in is over the air.
 
 ### Installing it
 
+#### Getting the firmware
+
+**Prebuilt images are published as [Releases](https://github.com/s0meguy1/tuyaZigbee/releases)** —
+the firmware is deliberately *not* committed to this repository, because a
+rebuild of identical sources differs in its embedded date code and CRC and
+would stop matching what is actually deployed.
+
+Each release carries both containers and a `SHA256SUMS`. Download and verify
+before you flash anything:
+
+```sh
+gh release download --repo s0meguy1/tuyaZigbee --pattern '*'
+sha256sum -c SHA256SUMS
+```
+
+Or without `gh`, grab the assets from the release page and check them the same
+way. **Verify the sha256 at both ends** — the machine you downloaded to and the
+machine Zigbee2MQTT will fetch from. An image without recorded provenance has
+bricked a fixture on this project.
+
+Prefer to build it yourself? See [Compilation](#compilation) — the full source
+is here and the release is only a convenience.
+
+#### Which container
+
 Every build emits **two** containers, and picking the wrong one wastes a transfer:
 
 | file | mfg / image type / version | use it for |

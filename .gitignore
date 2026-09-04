@@ -1,6 +1,11 @@
 # build dir
 build/*
 build-bench/
+# Every out-of-tree build directory (build-35, build-36, build-37, build-exp...).
+# Firmware binaries are distributed as GitHub Releases with published sha256s,
+# never committed: a rebuild of identical sources differs in its date code and
+# CRC, so a committed binary would not match what is actually deployed.
+build-*/
 
 #cache dir
 .cache/*
@@ -75,6 +80,12 @@ field-artifacts/private*/
 field-artifacts/*capture*/
 field-artifacts/*.log
 field-artifacts/*.bin
+# field-artifacts/ is a LOCAL staging area, not a distribution channel.
+# Nothing binary in it is publishable: a raw network map carries every device
+# address on the mesh, and firmware ships as a GitHub Release with a published
+# sha256 rather than as a committed blob. Only the README here is tracked.
+field-artifacts/*.zigbee
+field-artifacts/*.json
 # Do not add full local EUI-64s to artifact names. The 16 character pattern is
 # deliberately narrow so public, non-identity firmware names stay trackable.
 field-artifacts/*0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]*.zigbee
