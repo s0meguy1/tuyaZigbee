@@ -199,6 +199,10 @@ static void tuyaLight_zclDfltRspCmd(zclDefaultRspCmd_t *pDftRspCmd)
 {
 //  printf("tuyaLight_zclDfltRspCmd\n");
 #ifdef ZCL_OTA
+	/* OTA-CRITICAL. This is how a rejected or failed upgrade is unwound.
+	 * Get it wrong and a fixture can sit believing an install is still in
+	 * flight. Prove changes on the SWire bench; full banner in
+	 * light/moes_otaScheme.h. */
 	if( (pDftRspCmd->commandID == ZCL_CMD_OTA_UPGRADE_END_REQ) &&
 		(pDftRspCmd->statusCode == ZCL_STA_ABORT) ){
 		if(zcl_attr_imageUpgradeStatus == IMAGE_UPGRADE_STATUS_DOWNLOAD_COMPLETE){

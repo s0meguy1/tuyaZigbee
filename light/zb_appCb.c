@@ -76,6 +76,9 @@ void zbdemo_bdbIdentifyCb(u8 endpoint, u16 srcAddr, u16 identifyTime);
 bdb_appCb_t g_zbDemoBdbCb = {zbdemo_bdbInitCb, zbdemo_bdbCommissioningCb, zbdemo_bdbIdentifyCb, NULL};
 
 #ifdef ZCL_OTA
+/* OTA-CRITICAL. Prove changes here on the SWire bench before any live
+ * fixture; a fault in this path is unrecoverable over the air. See the
+ * full banner in light/moes_otaScheme.h and OTA_TEST_PLAN.md Phase 0. */
 ota_callBack_t tuyaLight_otaCb =
 {
 	tuyaLight_otaProcessMsgHandler,

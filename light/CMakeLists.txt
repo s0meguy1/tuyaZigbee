@@ -69,6 +69,14 @@ ADD_DEFINITIONS(
     -DMIMIC_HEIMAN=${MIMIC_HEIMAN}
 )
 
+# =======================================================================
+# OTA-CRITICAL. Prove any change below on the SWire bench before it
+# reaches a live fixture. This single constant decides where the OTA
+# staging bank lands; get it wrong and every deployed fixture takes one
+# more update and then can never take another, which is not recoverable
+# over the air. See the full banner in light/moes_otaScheme.h,
+# MOES_EDITING_GUIDE.md S1.1 and S1.2, and OTA_TEST_PLAN.md Phase 0.
+# =======================================================================
 # Moes TS0505B: relocate NV to Tuya's own base. Two reasons, both fatal
 # otherwise (see the patch note in tl_zigbee_sdk/proj/drivers/drv_nv.h):
 #   * the SDK default 0xE6000 makes NV overrun the factory blocks at

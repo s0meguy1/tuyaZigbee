@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
 
+# =======================================================================
+# OTA-CRITICAL. Prove any change below on the SWire bench before it
+# reaches a live fixture.
+#
+# This builds the image that deployed fixtures install. A mistake here
+# is not a bad build, it is a fixture that will not boot or will not
+# rejoin, and such a fixture CANNOT be recovered over the air. The only
+# way back is SWire, with the light physically down from the ceiling.
+# That has already cost this project one fixture: INCIDENT_2026-08-15.md
+#
+# The host suites cannot catch it. They never perform a transfer, so
+# green tests say nothing about whether an update still installs.
+#
+# Before this reaches any live device:
+#   1. OTA_TEST_PLAN.md, "Phase 0 - bench unit. Mandatory."
+#   2. MOES_EDITING_GUIDE.md S1, the four invariants.
+#   3. A real OTA onto the bench fixture, then a power cycle, then a
+#      rejoin. An image that boots once is not proof.
+# =======================================================================
+
 import argparse
 import binascii
 import os

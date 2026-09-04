@@ -38,7 +38,11 @@
 /**********************************************************************
  * LOCAL CONSTANTS
  */
-#define ZCL_COLOR_CHANGE_INTERVAL		100
+/* Build 38. See MOES_RAMP_TICK_MS in tuyaLightCtrl.h. A colour-temperature
+ * fade was exactly as steppy as a level fade, and Home Assistant scene
+ * transitions move level and colour together, so fixing only the level path
+ * would have left half the artefact on screen. */
+#define ZCL_COLOR_CHANGE_INTERVAL		MOES_RAMP_TICK_MS
 
 
 
@@ -110,6 +114,41 @@ static ev_timer_event_t *colorLoopTimerEvt = NULL;
  */
 void tuyaLight_updateColorMode(u8 colorMode);
 
+
+/*********************************************************************
+ * @fn      tuyaLight_colorSteps
+ *
+ * @brief   ZCL transition time (deciseconds) -> ramp ticks.
+ *
+ *          Unlike the level cluster's RemainingTime, none of the counters in
+ *          colorInfo are ZCL attributes - they are private to this file - so
+ *          they simply become tick counters and nothing else has to change.
+ */
+static u16 tuyaLight_colorSteps(u16 transitionTimeDs)
+{
+	u32 steps;
+
+	/* 0 has always meant "immediately" here, and that has always been one
+	 * tick; keep it one tick rather than a decisecond's worth.
+	 *
+	 * 0xFFFF is the ZCL "not specified" sentinel and the level cluster already
+	 * coerces it the same way. It used to fall through to the counter, where
+	 * light_applyUpdate() reads 0xFFFF as "never expires" - an endless
+	 * transition holding a permanently scheduled timer with a step of zero.
+	 * That was tolerable at 10 Hz and is not at 50 Hz. */
+	if((transitionTimeDs == 0) || (transitionTimeDs == 0xFFFF)){
+		return 1;
+	}
+
+	steps = (u32)transitionTimeDs * MOES_RAMP_STEPS_PER_DS;
+
+	/* Stay below 0xFFFF, which would mean "never expires" to the counter. */
+	if(steps > 0xFFFEu){
+		steps = 0xFFFEu;
+	}
+
+	return (u16)steps;
+}
 
 /*********************************************************************
  * @fn      tuyaLight_colorInit
@@ -439,7 +478,7 @@ static void tuyaLight_moveToHueProcess(zcl_colorCtrlMoveToHueCmd_t *cmd)
 			break;
 	}
 
-	colorInfo.hueRemainingTime = (cmd->transitionTime == 0) ? 1 : cmd->transitionTime;
+	colorInfo.hueRemainingTime = tuyaLight_colorSteps(cmd->transitionTime);
 	colorInfo.stepHue256 = ((s32)hueDiff) << 8;
 	colorInfo.stepHue256 /= (s32)colorInfo.hueRemainingTime;
 
@@ -483,11 +522,11 @@ static void tuyaLight_moveHueProcess(zcl_colorCtrlMoveHueCmd_t *cmd)
 			colorInfo.hueRemainingTime = 0;
 			break;
 		case COLOR_CTRL_MOVE_UP:
-			colorInfo.stepHue256 = (((s32)cmd->rate) << 8) / 10;
+			colorInfo.stepHue256 = (((s32)cmd->rate) << 8) / (10 * MOES_RAMP_STEPS_PER_DS);
 			colorInfo.hueRemainingTime = 0xFFFF;
 			break;
 		case COLOR_CTRL_MOVE_DOWN:
-			colorInfo.stepHue256 = ((-(s32)cmd->rate) << 8) / 10;
+			colorInfo.stepHue256 = ((-(s32)cmd->rate) << 8) / (10 * MOES_RAMP_STEPS_PER_DS);
 			colorInfo.hueRemainingTime = 0xFFFF;
 			break;
 		default:
@@ -528,7 +567,7 @@ static void tuyaLight_stepHueProcess(zcl_colorCtrlStepHueCmd_t *cmd)
 
 	colorInfo.currentHue256 = (u16)(pColor->currentHue) << 8;
 
-	colorInfo.hueRemainingTime = (cmd->transitionTime == 0) ? 1 : cmd->transitionTime;
+	colorInfo.hueRemainingTime = tuyaLight_colorSteps(cmd->transitionTime);
 
 	colorInfo.stepHue256 = (((s32)cmd->stepSize) << 8) / colorInfo.hueRemainingTime;
 
@@ -576,7 +615,7 @@ static void tuyaLight_moveToSaturationProcess(zcl_colorCtrlMoveToSaturationCmd_t
 
 	colorInfo.currentSaturation256 = (u16)(pColor->currentSaturation) << 8;
 
-	colorInfo.saturationRemainingTime = (cmd->transitionTime == 0) ? 1 : cmd->transitionTime;
+	colorInfo.saturationRemainingTime = tuyaLight_colorSteps(cmd->transitionTime);
 
 	colorInfo.stepSaturation256 = ((s32)(cmd->saturation - pColor->currentSaturation)) << 8;
 	colorInfo.stepSaturation256 /= (s32)colorInfo.saturationRemainingTime;
@@ -621,11 +660,11 @@ static void tuyaLight_moveSaturationProcess(zcl_colorCtrlMoveSaturationCmd_t *cm
 			colorInfo.saturationRemainingTime = 0;
 			break;
 		case COLOR_CTRL_MOVE_UP:
-			colorInfo.stepSaturation256 = (((s32)cmd->rate) << 8) / 10;
+			colorInfo.stepSaturation256 = (((s32)cmd->rate) << 8) / (10 * MOES_RAMP_STEPS_PER_DS);
 			colorInfo.saturationRemainingTime = 0xFFFF;
 			break;
 		case COLOR_CTRL_MOVE_DOWN:
-			colorInfo.stepSaturation256 = ((-(s32)cmd->rate) << 8) / 10;
+			colorInfo.stepSaturation256 = ((-(s32)cmd->rate) << 8) / (10 * MOES_RAMP_STEPS_PER_DS);
 			colorInfo.saturationRemainingTime = 0xFFFF;
 			break;
 		default:
@@ -666,7 +705,7 @@ static void tuyaLight_stepSaturationProcess(zcl_colorCtrlStepSaturationCmd_t *cm
 
 	colorInfo.currentSaturation256 = (u16)(pColor->currentSaturation) << 8;
 
-	colorInfo.saturationRemainingTime = (cmd->transitionTime == 0) ? 1 : cmd->transitionTime;
+	colorInfo.saturationRemainingTime = tuyaLight_colorSteps(cmd->transitionTime);
 
 	colorInfo.stepSaturation256 = (((s32)cmd->stepSize) << 8) / colorInfo.saturationRemainingTime;
 
@@ -891,7 +930,7 @@ static void tuyaLight_moveToColorTemperatureProcess(zcl_colorCtrlMoveToColorTemp
 
 	colorInfo.currentColorTemp256 = (u32)(pColor->colorTemperatureMireds) << 8;
 
-	colorInfo.colorTempRemainingTime = (cmd->transitionTime == 0) ? 1 : cmd->transitionTime;
+	colorInfo.colorTempRemainingTime = tuyaLight_colorSteps(cmd->transitionTime);
 
 	colorInfo.stepColorTemp256 = ((s32)(cmd->colorTemperature - pColor->colorTemperatureMireds)) << 8;
 	colorInfo.stepColorTemp256 /= (s32)colorInfo.colorTempRemainingTime;
@@ -951,11 +990,11 @@ static void tuyaLight_moveColorTemperatureProcess(zcl_colorCtrlMoveColorTemperat
 			colorInfo.colorTempRemainingTime = 0;
 			break;
 		case COLOR_CTRL_MOVE_UP:
-			colorInfo.stepColorTemp256 = (((s32)cmd->rate) << 8) / 10;
+			colorInfo.stepColorTemp256 = (((s32)cmd->rate) << 8) / (10 * MOES_RAMP_STEPS_PER_DS);
 			colorInfo.colorTempRemainingTime = 0xFFFF;
 			break;
 		case COLOR_CTRL_MOVE_DOWN:
-			colorInfo.stepColorTemp256 = ((-(s32)cmd->rate) << 8) / 10;
+			colorInfo.stepColorTemp256 = ((-(s32)cmd->rate) << 8) / (10 * MOES_RAMP_STEPS_PER_DS);
 			colorInfo.colorTempRemainingTime = 0xFFFF;
 			break;
 		default:
@@ -1011,7 +1050,7 @@ static void tuyaLight_stepColorTemperatureProcess(zcl_colorCtrlStepColorTemperat
 
 	colorInfo.currentColorTemp256 = (u32)(pColor->colorTemperatureMireds) << 8;
 
-	colorInfo.colorTempRemainingTime = (cmd->transitionTime == 0) ? 1 : cmd->transitionTime;
+	colorInfo.colorTempRemainingTime = tuyaLight_colorSteps(cmd->transitionTime);
 
 	colorInfo.stepColorTemp256 = (((s32)cmd->stepSize) << 8) / colorInfo.colorTempRemainingTime;
 

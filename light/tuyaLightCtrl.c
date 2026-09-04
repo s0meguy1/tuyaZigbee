@@ -22,6 +22,7 @@
 #include "zcl_include.h"
 #include "tuyaLight.h"
 #include "tuyaLightCtrl.h"
+#include "moes_dim.h"
 #include "moes_flashcfg.h"
 #include "light_effects.h"
 #include "moes_color.h"
@@ -112,19 +113,18 @@ static bool moes_chanInit(moes_chan_t *ch, u8 modulePin, u8 activeLevel,
 }
 
 /*********************************************************************
- * @fn      moes_duty
+ * @fn      moes_duty256
  *
- * @brief   0..255 input -> PWM duty with active-level inversion.
+ * @brief   Wide-domain input -> PWM duty with active-level inversion.
+ *
+ *          Build 38: the inversion happens in the wide domain so it cannot
+ *          re-quantize what the curve just produced. The u8 version also had
+ *          to scale by PWM_FULL_DUTYCYCLE to survive pwmSetDuty()'s divisor;
+ *          nothing in the wide path needs that, so an earlier /2 bug of the
+ *          same family cannot recur.
  */
-static u16 moes_duty(moes_chan_t *ch, u8 v){
-	if(ch->activeLow){
-		v = 255 - v;
-	}
-	/* pwmSetDuty() divides by (ZCL_LEVEL_ATTR_MAX_LEVEL * PWM_FULL_DUTYCYCLE),
-	 * so full scale is v * PWM_FULL_DUTYCYCLE - same as upstream. An earlier
-	 * /2 here (a bogus "fits in u16" guard; 255*100 = 25500 fits fine) capped
-	 * every channel at 50% duty. */
-	return (u16)v * PWM_FULL_DUTYCYCLE;
+static u32 moes_duty256(moes_chan_t *ch, u32 v256){
+	return moes_dimInvert256(v256, ch->activeLow);
 }
 
 /* Stock's brightness curve.
@@ -151,51 +151,71 @@ static u16 moes_duty(moes_chan_t *ch, u8 v){
  * parser off the boot path.
  *
  * Zero must stay zero: brightmin is a dimming floor for a lit channel, not an
- * output floor, and hwLight_onOffUpdate() drives Off through this path. */
-#define MOES_BRIGHT_MIN_PCT   1
-#define MOES_BRIGHT_MAX_PCT   100
+ * output floor, and hwLight_onOffUpdate() drives Off through this path.
+ *
+ * Build 38: the curve itself now lives in moes_dim.c, so tools/
+ * level_curve_hosttest executes the real function rather than a copy, and it
+ * is evaluated in 8.8 instead of through whole percents. The SHAPE is
+ * unchanged - the same linear brightmin..brightmax ramp - but it is evaluated
+ * exactly where the old code rounded twice, so 256 inputs no longer collapse
+ * onto 101 outputs. Rendered duty moves by at most 3/255 of full scale at any
+ * one level, which is under the visible threshold at a steady brightness and
+ * is a move toward the design intent, not away from it. Do NOT make it
+ * perceptual; see above for what that cost last time.
+ */
 
-static u8 moes_levelCurve(u8 v)
+/*********************************************************************
+ * @fn      pwmSetDuty256
+ *
+ * @brief   The single remaining quantizer: wide duty -> hardware compare
+ *          ticks. moes_pwmMaxTick is 12000 on this part (48 MHz system clock,
+ *          4 kHz PWM), so the output stage resolves ~12000 steps where the u8
+ *          chain resolved 101.
+ */
+static void pwmSetDuty256(u8 ch, u32 v256)
 {
-	u32 pct;
+	u32 cmp_tick = moes_dimCmpTick(v256, moes_pwmMaxTick);
+	drv_pwm_cfg(ch, (u16)cmp_tick, (u16)moes_pwmMaxTick);
+}
 
-	if(v == 0){
-		return 0;
+/*********************************************************************
+ * @fn      moes_outSet256
+ *
+ * @brief   The single 5-channel output point, in the wide domain. Each
+ *          argument is an 0..255 channel level carried in 8.8 fixed point,
+ *          i.e. 0..MOES_DIM_MAX256. Gamma and white-balance trim are applied
+ *          here, both without an intermediate u8.
+ */
+void moes_outSet256(u16 r, u16 g, u16 b, u16 cw, u16 ww)
+{
+	u32 r32 = r;
+	u32 g32 = g;
+	u32 b32 = b;
+
+	/* white-balance trim on the RGB channels (stock gmwr/gmwg/gmwb) */
+	if(g_moesCfg.valid){
+		r32 = (r32 * g_moesCfg.gmwr) / 100;
+		g32 = (g32 * g_moesCfg.gmwg) / 100;
+		b32 = (b32 * g_moesCfg.gmwb) / 100;
 	}
 
-	pct = MOES_BRIGHT_MIN_PCT +
-	      (((u32)v * (MOES_BRIGHT_MAX_PCT - MOES_BRIGHT_MIN_PCT)) / 255);
-
-	return (u8)((pct * 255) / 100);
+	pwmSetDuty256(moes_chan[0].pwmChannel, moes_duty256(&moes_chan[0], moes_dimCurve256(r32)));
+	pwmSetDuty256(moes_chan[1].pwmChannel, moes_duty256(&moes_chan[1], moes_dimCurve256(g32)));
+	pwmSetDuty256(moes_chan[2].pwmChannel, moes_duty256(&moes_chan[2], moes_dimCurve256(b32)));
+	pwmSetDuty256(moes_chan[3].pwmChannel, moes_duty256(&moes_chan[3], moes_dimCurve256(cw)));
+	pwmSetDuty256(moes_chan[4].pwmChannel, moes_duty256(&moes_chan[4], moes_dimCurve256(ww)));
 }
 
 /*********************************************************************
  * @fn      moes_outSet
  *
- * @brief   The single output point for normal control AND the effect
- *          engine. r,g,b,cw,ww are 0..255 pre-gamma? No: raw linear.
- *          Gamma and white-balance trim are applied here.
+ * @brief   u8 entry point, unchanged for every existing caller - the
+ *          light-show engine included. Widening is exact: 255 maps to
+ *          MOES_DIM_MAX256, so full scale stays full scale.
  */
 void moes_outSet(u8 r, u8 g, u8 b, u8 cw, u8 ww)
 {
-	/* white-balance trim on the RGB channels (stock gmwr/gmwg/gmwb) */
-	if(g_moesCfg.valid){
-		r = (u16)r * g_moesCfg.gmwr / 100;
-		g = (u16)g * g_moesCfg.gmwg / 100;
-		b = (u16)b * g_moesCfg.gmwb / 100;
-	}
-
-	u8 gr = moes_levelCurve(r);
-	u8 gg = moes_levelCurve(g);
-	u8 gb = moes_levelCurve(b);
-	u8 gc = moes_levelCurve(cw);
-	u8 gw = moes_levelCurve(ww);
-
-	pwmSetDuty(moes_chan[0].pwmChannel, moes_duty(&moes_chan[0], gr));
-	pwmSetDuty(moes_chan[1].pwmChannel, moes_duty(&moes_chan[1], gg));
-	pwmSetDuty(moes_chan[2].pwmChannel, moes_duty(&moes_chan[2], gb));
-	pwmSetDuty(moes_chan[3].pwmChannel, moes_duty(&moes_chan[3], gc));
-	pwmSetDuty(moes_chan[4].pwmChannel, moes_duty(&moes_chan[4], gw));
+	moes_outSet256((u16)r << 8, (u16)g << 8, (u16)b << 8, (u16)cw << 8, (u16)ww << 8);
 }
 
 /*********************************************************************
@@ -277,22 +297,23 @@ void hwLight_levelUpdate(u8 level)
 }
 
 /*********************************************************************
- * @fn      temperatureToCW
+ * @fn      temperatureToCW256
+ *
+ * @brief   Build 38. Carries the 8.8 level into the cool/warm split.
+ *
+ *          The u8 version divided a u8 level into u8 C and W with integer
+ *          division, which is where the bottom of a fade fell apart: at
+ *          230 mireds, ZCL levels 3,4,5 and 6 all produced the same pair and
+ *          therefore the same PWM output, so a fade-to-off ended in four
+ *          visible jumps instead of a ramp.
  */
-void temperatureToCW(u16 temperatureMireds, u8 level, u8 *C, u8 *W)
+void temperatureToCW256(u16 temperatureMireds, u16 level256, u16 *C256, u16 *W256)
 {
 	zcl_lightColorCtrlAttr_t *pColor = zcl_colorAttrGet();
 
-	if(temperatureMireds < pColor->colorTempPhysicalMinMireds){
-		temperatureMireds = pColor->colorTempPhysicalMinMireds;
-	}
-	if(temperatureMireds > pColor->colorTempPhysicalMaxMireds){
-		temperatureMireds = pColor->colorTempPhysicalMaxMireds;
-	}
-
-	*W = (u8)(((u32)(temperatureMireds - pColor->colorTempPhysicalMinMireds) * level) /
-			  (pColor->colorTempPhysicalMaxMireds - pColor->colorTempPhysicalMinMireds));
-	*C = level - (*W);
+	moes_dimSplitCW256(temperatureMireds,
+					   pColor->colorTempPhysicalMinMireds, pColor->colorTempPhysicalMaxMireds,
+					   level256, C256, W256);
 }
 
 /*********************************************************************
@@ -300,8 +321,9 @@ void temperatureToCW(u16 temperatureMireds, u8 level, u8 *C, u8 *W)
  */
 void hwLight_colorUpdate_colorTemperature(u16 colorTemperatureMireds, u8 level)
 {
-	u8 C = 0;
-	u8 W = 0;
+	u16 C256 = 0;
+	u16 W256 = 0;
+	u16 level256;
 
 	/* Upstream clamped every level below 0x0A up to 0x0A, so ZCL levels 1-9 all
 	 * rendered identically at 10. That is a real fidelity loss on this fleet:
@@ -310,8 +332,20 @@ void hwLight_colorUpdate_colorTemperature(u16 colorTemperatureMireds, u8 level)
 	 * minimum instead; level 0 is Off and is handled by the on/off path. */
 	if(level < ZCL_LEVEL_ATTR_MIN_LEVEL){ level = ZCL_LEVEL_ATTR_MIN_LEVEL; }
 
-	temperatureToCW(colorTemperatureMireds, level, &C, &W);
-	moes_outSet(0, 0, 0, C, W);
+	/* Build 38: render the live 8.8 level rather than its rounded u8. During a
+	 * transition that is the difference between ~50 and ~250 distinct outputs
+	 * over a 5 s fade. tuyaLight_levelWiden() falls back to the plain attribute
+	 * whenever the two disagree by more than one level, so a scene recall, a
+	 * Tuya datapoint or an effect stop - all of which write curLevel directly -
+	 * can never leave a stale sub-level on the output. */
+#ifdef ZCL_LEVEL_CTRL
+	level256 = tuyaLight_levelWiden(level);
+#else
+	level256 = ((u16)level) << 8;
+#endif
+
+	temperatureToCW256(colorTemperatureMireds, level256, &C256, &W256);
+	moes_outSet256(0, 0, 0, C256, W256);
 }
 
 /*********************************************************************

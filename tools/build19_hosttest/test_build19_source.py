@@ -311,6 +311,80 @@ class Build19SourceContracts(unittest.TestCase):
                 f"private forensic evidence is published on {PUBLIC_REF}: {relative}",
             )
 
+    # The OTA path is the one place where a mistake is not recoverable over
+    # the air. These files carry a banner saying so; this keeps the banner
+    # from being quietly dropped by a future edit or a refactor.
+    OTA_CRITICAL_FILES = (
+        "light/moes_otaScheme.h",
+        "light/moes_otaScheme.c",
+        "light/tuyaLight.c",
+        "light/zb_appCb.c",
+        "light/zcl_tuyaLightCb.c",
+        "light/CMakeLists.txt",
+        "tools/make_ota.py",
+        "tools/tl_check_fw.py",
+    )
+
+    def test_ota_critical_files_still_warn_that_the_bench_is_mandatory(self) -> None:
+        """Every file that can brick a fixture must say so, in the file.
+
+        Break the level curve and you get a light that looks wrong. Break the
+        OTA path and you get a light that will not boot or will not rejoin,
+        which cannot be fixed over the air - the fixture comes down from the
+        ceiling and goes on the SWire bench. That has happened here once
+        already (INCIDENT_2026-08-15.md).
+
+        The host suites cannot catch it: they never run the bootloader, never
+        write flash and never perform a transfer. So the warning has to travel
+        with the code, where somebody editing it will actually read it, rather
+        than living only in a document nobody opens.
+        """
+        for relative in self.OTA_CRITICAL_FILES:
+            text = source(relative)
+            self.assertIn(
+                "OTA-CRITICAL", text,
+                f"{relative} lost its OTA-CRITICAL banner; a change here needs "
+                f"SWire bench proof before any live fixture, and the next "
+                f"person to edit it has no way to know that now")
+
+        # The canonical banner has to keep naming what to actually do, not
+        # merely that something is dangerous.
+        canonical = source("light/moes_otaScheme.h")
+        for required in ("SWire bench", "OTA_TEST_PLAN.md", "MOES_EDITING_GUIDE.md",
+                         "INCIDENT_2026-08-15.md"):
+            self.assertIn(
+                required, canonical,
+                f"the canonical OTA banner no longer points at {required}")
+
+        # And the danger-zone index has to keep listing it, including the
+        # grep that tells someone which side of the line they are on.
+        danger = source("DANGER_ZONES.md")
+        self.assertIn("OTA-CRITICAL", danger,
+                      "DANGER_ZONES.md no longer covers the OTA path")
+
+    def test_ota_critical_list_has_not_gone_stale(self) -> None:
+        """The list above must match what is actually banner-marked in the tree.
+
+        A file that grows an OTA responsibility and a banner, but never gets
+        added here, is unprotected against a later edit stripping the banner.
+        A file that loses the responsibility should lose the banner and the
+        entry together.
+        """
+        marked = set()
+        for pattern in ("light/*.c", "light/*.h", "light/CMakeLists.txt", "tools/*.py"):
+            for path in REPO_ROOT.glob(pattern):
+                try:
+                    if "OTA-CRITICAL" in path.read_text(encoding="utf-8"):
+                        marked.add(str(path.relative_to(REPO_ROOT)))
+                except (UnicodeDecodeError, OSError):
+                    continue
+
+        self.assertEqual(
+            marked, set(self.OTA_CRITICAL_FILES),
+            "OTA_CRITICAL_FILES and the banners in the tree disagree; add the "
+            "file to the list, or remove the banner if it is no longer on the "
+            "OTA path")
+
     def test_brightness_curve_is_stock_linear_not_squared(self) -> None:
         """The output curve must match stock, and Off must stay Off.
 
@@ -324,22 +398,35 @@ class Build19SourceContracts(unittest.TestCase):
         The zero check is not cosmetic: hwLight_onOffUpdate() drives Off
         through this path, so a brightmin floor applied at zero would leave
         every "off" light faintly lit.
+
+        Build 38 moved the curve into light/moes_dim.c so that
+        tools/level_curve_hosttest can execute it rather than copy it, and
+        widened it to 8.8. The SHAPE is what this test guards, and that did not
+        change; the numeric behaviour is checked by executing it over there.
         """
         ctrl = source("light/tuyaLightCtrl.c")
+        dim_h = source("light/moes_dim.h")
+        dim_c = source("light/moes_dim.c")
 
-        self.assertIn("moes_levelCurve", ctrl)
         self.assertRegex(
-            ctrl, r"#define\s+MOES_BRIGHT_MIN_PCT\s+1\b",
+            dim_h, r"#define\s+MOES_BRIGHT_MIN_PCT\s+1\b",
             "brightmin must be 1 percent, as the factory config specifies")
         self.assertRegex(
-            ctrl, r"#define\s+MOES_BRIGHT_MAX_PCT\s+100\b",
+            dim_h, r"#define\s+MOES_BRIGHT_MAX_PCT\s+100\b",
             "brightmax must be 100 percent, as the factory config specifies")
 
-        curve = re.search(r"static u8 moes_levelCurve\(u8 v\)\s*\{.*?\n\}",
-                          ctrl, re.S)
-        self.assertIsNotNone(curve, "moes_levelCurve not found")
-        self.assertRegex(curve.group(0), r"if\(v == 0\)\s*\{\s*return 0;",
+        curve = re.search(r"unsigned int moes_dimCurve256\(unsigned int v256\)\s*\{.*?\n\}",
+                          dim_c, re.S)
+        self.assertIsNotNone(curve, "moes_dimCurve256 not found")
+        self.assertRegex(curve.group(0), r"if\(v256 == 0u?\)\s*\{\s*return 0u?;",
                          "zero input must produce zero duty, or Off stays lit")
+
+        # The curve must stay a single linear term in v256. A squared or
+        # otherwise perceptual shape would move every stored scene and break
+        # the match with the stock fixtures still in these rooms.
+        self.assertNotRegex(curve.group(0), r"v256\s*\*\s*v256",
+                            "the curve must not be squared; see the hardware "
+                            "measurements in tuyaLightCtrl.c")
 
         # The squared curve must be gone from every channel, not just the
         # white ones - a mixed curve would make colour modes disagree with

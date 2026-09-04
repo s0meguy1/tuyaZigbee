@@ -8,6 +8,33 @@
  * @date    2026
  *******************************************************************************************************/
 
+/*=======================================================================
+ * OTA-CRITICAL. Prove any change below on the SWire bench before it
+ * reaches a live fixture.
+ *
+ * A fault in this path does not look like a bad fade or a wrong colour.
+ * It looks like a fixture that will not boot or will not rejoin, and a
+ * fixture in that state CANNOT be recovered over the air. The only way
+ * back is SWire, with the light physically down from the ceiling. That
+ * has already cost this project one fixture: INCIDENT_2026-08-15.md.
+ *
+ * The host suites cannot catch it. They do not run the bootloader, do
+ * not write flash and never perform a transfer, so green tests say
+ * nothing about whether an update still installs.
+ *
+ * Before this reaches any live device:
+ *   1. OTA_TEST_PLAN.md, "Phase 0 - bench unit. Mandatory."
+ *   2. MOES_EDITING_GUIDE.md S1, the four invariants.
+ *   3. A real OTA onto the bench fixture, then a power cycle, then a
+ *      rejoin. An image that boots once is not proof.
+ *
+ * Ordinary application work - rendering, effects, ZCL behaviour - does
+ * NOT need this. Build 38 is the worked example: it rewrote the whole
+ * dimming path and touched no file carrying this banner, so the bench
+ * stayed in its box. Check which side of the line you are on rather
+ * than assuming either answer.
+ *=====================================================================*/
+
 #include "../common/comm_cfg.h"
 
 /* MOES: the whole file is dead code unless MOES_NOBOOT_MIGRATION is defined,

@@ -70,6 +70,11 @@ app_ctx_t gLightCtx;
 #ifdef ZCL_OTA
 extern ota_callBack_t tuyaLight_otaCb;
 
+/* OTA-CRITICAL. These three fields are what a coordinator matches an
+ * offered image against. Change one and every deployed fixture either
+ * stops being offered updates or is offered the wrong image; neither
+ * failure is visible until an update is attempted. Prove any change on
+ * the SWire bench first - full banner in light/moes_otaScheme.h. */
 //running code firmware information
 ota_preamble_t tuyaLight_otaInfo = {
 	.fileVer 			= FILE_VERSION,

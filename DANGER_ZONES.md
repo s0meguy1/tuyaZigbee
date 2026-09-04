@@ -112,6 +112,44 @@ Not brick-risk, but fleet-visible and easy to get wrong:
 
 ---
 
+## 7. The OTA path — everything carrying the `OTA-CRITICAL` banner
+
+Grep for it:
+
+```bash
+grep -rln "OTA-CRITICAL" light/ tools/
+```
+
+Today that is `light/moes_otaScheme.{c,h}`, `light/tuyaLight.c` (the
+`ota_preamble_t` a coordinator matches against), `light/zb_appCb.c` (the OTA
+callback table), `light/zcl_tuyaLightCb.c` (the upgrade-end abort),
+`light/CMakeLists.txt` (the NV base, which places the staging bank), and
+`tools/{make_ota,tl_check_fw}.py`.
+
+**Why this one is different from the six above.** Break any of those and you
+get a light that misbehaves. Break this and you get a light that will not boot
+or will not rejoin — and there is no way back over the air. The fixture comes
+down from the ceiling and goes on the SWire bench. That has already happened
+once here: `INCIDENT_2026-08-15.md`.
+
+**The host suites do not cover it and cannot.** They never run the bootloader,
+never write flash and never perform a transfer. A green `make check` says
+nothing about whether an update still installs. The only evidence that counts
+is a real OTA onto the bench fixture, followed by a power cycle and a rejoin.
+An image that boots once is not proof.
+
+**Do not over-apply this.** Build 38 rewrote the entire dimming and transition
+path — level, colour, output stage — and touched none of these files, so it
+needed no bench time. The image grew 464 bytes and stayed at 81% of the
+`0x40000` slot. Check which side of the line a change is actually on:
+
+```bash
+git diff --name-only | xargs grep -l "OTA-CRITICAL" 2>/dev/null
+```
+
+Empty output means the OTA path is untouched. That is the check to run before
+concluding you are exempt, and the one to run before concluding you are not.
+
 ## The rule that underpins all of these
 
 **A successful ZCL command or attribute readback does not prove LED output, and
