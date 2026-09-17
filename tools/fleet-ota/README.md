@@ -87,7 +87,11 @@ their zigbee2mqtt descriptions. To control the order or the scope, give
 5. Three failed attempts mark the fixture FAILED and the run moves on; after
    `--max-failures` (default 3) the run stops.
 
-After the **first** fixture it applies the gate you chose. `report` checks that
+After the **first** fixture it applies the gate you chose. A fixture that has
+just installed an image reboots and can take a minute or more to answer again,
+so the gate first waits for a plain read to succeed (up to three minutes) and
+then asks for the show report up to six times; a one-shot check here once
+stopped a healthy run. `report` checks that
 the fixture's show report carries `light_show_cue_slots` (firmware and
 converter agree). `turnon` additionally fades the fixture off, sends the raw
 with-on-off "level 20 over 2 s" turn-on and requires it to read back ON, which

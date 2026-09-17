@@ -176,14 +176,31 @@ log "url $URL"
 for D in $ALL; do log "  queued $D ($(fname_of "$D"))"; done
 
 gate(){   # returns 0 to continue, 1 to stop
-  local D="$1" FN; FN=$(fname_of "$D"); sleep 15
+  local D="$1" FN SUB i; FN=$(fname_of "$D")
   [ "$GATE" = "none" ] && return 0
-  $MQTT_SUB -t "$Z2M_BASE/$FN" -C 1 -W 20 > /tmp/fleet-ota-gate1.json 2>/dev/null & local SUB=$!; sleep 2
-  pub "$Z2M_BASE/$FN/get" '{"light_show":""}'; wait $SUB
-  if grep -q '"light_show_cue_slots"' /tmp/fleet-ota-gate1.json 2>/dev/null; then
+  # The fixture has just rebooted into the new build. Wait for it to answer a plain read (up to
+  # 3 min) before asking anything of it: a one-shot 20 s window here once read an empty report
+  # from a healthy fixture and stopped a run for five hours.
+  local ALIVE=0
+  for i in $(seq 1 12); do
+    sleep 15
+    $MQTT_SUB -t "$Z2M_BASE/$FN" -C 1 -W 15 > /tmp/fleet-ota-alive.json 2>/dev/null & SUB=$!; sleep 2
+    pub "$Z2M_BASE/$FN/get" '{"state":""}'; wait $SUB
+    grep -q '"state"' /tmp/fleet-ota-alive.json 2>/dev/null && { ALIVE=1; log "  $D answers reads again after ~$((i*17)) s"; break; }
+  done
+  [ "$ALIVE" = 1 ] || log "  $D not answering reads 3 min after its install - trying the report anyway"
+  local OK1=0
+  for i in 1 2 3 4 5 6; do
+    : > /tmp/fleet-ota-gate1.json
+    $MQTT_SUB -t "$Z2M_BASE/$FN" -C 1 -W 20 > /tmp/fleet-ota-gate1.json 2>/dev/null & SUB=$!; sleep 2
+    pub "$Z2M_BASE/$FN/get" '{"light_show":""}'; wait $SUB
+    grep -q '"light_show_cue_slots"' /tmp/fleet-ota-gate1.json 2>/dev/null && { OK1=1; break; }
+    log "  gate report try $i: nothing yet - retrying in 20 s"; sleep 20
+  done
+  if [ "$OK1" = 1 ]; then
     log "GATE report OK on $D ($FN): $(grep -o '"light_show_cue_slots":"[^"]*"' /tmp/fleet-ota-gate1.json)"
   else
-    log "GATE report FAILED on $D ($FN): no light_show_cue_slots in the report - is the converter from this tag installed? STOPPING"; return 1
+    log "GATE report FAILED on $D ($FN): the fixture never reported light_show_cue_slots - is the converter from this tag installed? STOPPING"; return 1
   fi
   [ "$GATE" = "turnon" ] || return 0
   local OFF='{"command":{"cluster":"genLevelCtrl","command":"moveToLevelWithOnOff","payload":{"level":0,"transtime":20}}}'
@@ -200,13 +217,16 @@ gate(){   # returns 0 to continue, 1 to stop
   pub "$Z2M_BASE/$FN/set" "$OFF"; return 1
 }
 
-FIRST=1
+FIRST=1; GATE_STOPPED=0; STOPPED_ON_FAILURES=0
 for D in $ALL; do
   update_one "$D"
   N=$(echo $FAILED | wc -w)
-  if [ "$N" -ge "$MAX_FAILURES" ]; then log "STOPPING: $N failures ($FAILED)"; break; fi
-  if [ "$FIRST" = 1 ]; then FIRST=0; gate "$D" || break; fi
+  if [ "$N" -ge "$MAX_FAILURES" ]; then log "STOPPING: $N failures ($FAILED)"; STOPPED_ON_FAILURES=1; break; fi
+  if [ "$FIRST" = 1 ]; then FIRST=0; gate "$D" || { GATE_STOPPED=1; break; }; fi
 done
 log "=== RUN FINISHED ==="
 for D in $ALL; do log "  $D -> build '$(build_of "$D")' date '$(date_of "$D")'"; done
-[ -n "$FAILED" ] && log "FAILED:$FAILED" || log "every queued fixture is on $TARGET"
+if [ "$GATE_STOPPED" = 1 ]; then log "RESULT: stopped at the gate after the first fixture - the rest were NOT updated"
+elif [ "$STOPPED_ON_FAILURES" = 1 ]; then log "RESULT: stopped after $MAX_FAILURES failed fixtures ($FAILED) - the rest were NOT updated"
+elif [ -n "$FAILED" ]; then log "RESULT: finished; FAILED:$FAILED"
+else log "RESULT: every queued fixture is on $TARGET"; fi
