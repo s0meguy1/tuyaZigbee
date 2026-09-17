@@ -200,6 +200,16 @@ fixture. Its README lists what it needs (zigbee2mqtt 2.x, an MQTT client and
 the zigbee2mqtt log on the machine you run it from, an http server for the
 image). Custom-to-custom only.
 
+#### Newer units may not be convertible over the air
+
+Tuya states that from TuyaOS 3.12.0 the TLSR8258 platform supports encrypted
+("secure") Zigbee OTA. A stock fixture running such a build will not accept the
+CONVERT image over the air, whatever its label says; it needs the SWire route.
+Every fixture converted for this project so far shipped with an older build.
+Check the stock firmware's date code before buying in bulk, and keep the
+conversion procedure's SWire backup step regardless. (Pointed out by pvvx in
+doctor64/tuyaZigbee#23.)
+
 #### Which container
 
 Every build emits **two** containers, and picking the wrong one wastes a transfer:
