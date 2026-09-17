@@ -51,6 +51,7 @@ moes_fxWireStatus_e moes_fxWireParse(const unsigned char *payload, unsigned int 
 	f.effect = 0; f.speed = 0; f.phase = 0; f.spread = 0; f.index = 0;
 	f.hue = 0; f.sat = 0; f.level = 0; f.fade = 0; f.delay = 0;
 	f.duration = 0; f.takeover = 0; f.density = 0; f.cueRun = 0;
+	f.cueSave = 0; f.cueRecall = 0;
 
 	while(off < len){
 		unsigned char dp;
@@ -165,10 +166,26 @@ moes_fxWireStatus_e moes_fxWireParse(const unsigned char *payload, unsigned int 
 			f.cueRun = (unsigned char)v;
 			f.present |= MOES_FXF_CUE_RUN;
 			break;
+		case MOES_DP_CUE_SAVE:
+			if(v >= MOES_FX_CUE_SLOTS){ return MOES_FXW_INVALID; }
+			f.cueSave = (unsigned char)v;
+			f.present |= MOES_FXF_CUE_SAVE;
+			break;
+		case MOES_DP_CUE_RECALL:
+			if(v >= MOES_FX_CUE_SLOTS){ return MOES_FXW_INVALID; }
+			f.cueRecall = (unsigned char)v;
+			f.present |= MOES_FXF_CUE_RECALL;
+			break;
 		default:
 			return MOES_FXW_INVALID;
 		}
 		dps++;
+	}
+
+	/* Build 43: saving and recalling in one frame has no defined order, so
+	 * neither happens rather than one of them silently winning. */
+	if((f.present & MOES_FXF_CUE_SAVE) && (f.present & MOES_FXF_CUE_RECALL)){
+		return MOES_FXW_INVALID;
 	}
 
 	*out = f;
@@ -241,6 +258,7 @@ unsigned int moes_fxWireReportBuild(unsigned char *buf, unsigned int cap,
 	MOES_FXW_EMIT(MOES_DP_DENSITY,  MOES_DPT_VALUE, st->density,  1);
 	MOES_FXW_EMIT(MOES_DP_CUE_RUN,  MOES_DPT_ENUM,  st->cueRun,   1);
 	MOES_FXW_EMIT(MOES_DP_CUE_COUNT, MOES_DPT_VALUE, st->cueCount, 1);
+	MOES_FXW_EMIT(MOES_DP_CUE_SLOTS, MOES_DPT_BITMAP, st->cueSlots, 1);
 #undef MOES_FXW_EMIT
 
 	return off;

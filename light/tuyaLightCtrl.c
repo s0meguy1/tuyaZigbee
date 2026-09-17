@@ -53,6 +53,10 @@ typedef struct {
 
 static moes_chan_t moes_chan[5];   /* index: 0=R 1=G 2=B 3=CW 4=WW */
 static u16 moes_pwmMaxTick = PMW_MAX_TICK;
+/* Build 42: 256 = no tail. Set only for the duration of one moes_outSet256()
+ * by moes_outSetTail256(), which the extinction path calls with the 8.8 level
+ * below one whole ZCL level. */
+static u16 moes_tailScale256 = 256;
 /* Set while light_fresh() stops a running effect. lightFx_stop()
  * would otherwise call light_adjust() -> tuyaLight_colorInit(), which resets
  * the same colorInfo transition state the outer ZCL colour handler has just
@@ -199,11 +203,27 @@ void moes_outSet256(u16 r, u16 g, u16 b, u16 cw, u16 ww)
 		b32 = (b32 * g_moesCfg.gmwb) / 100;
 	}
 
-	pwmSetDuty256(moes_chan[0].pwmChannel, moes_duty256(&moes_chan[0], moes_dimCurve256(r32)));
-	pwmSetDuty256(moes_chan[1].pwmChannel, moes_duty256(&moes_chan[1], moes_dimCurve256(g32)));
-	pwmSetDuty256(moes_chan[2].pwmChannel, moes_duty256(&moes_chan[2], moes_dimCurve256(b32)));
-	pwmSetDuty256(moes_chan[3].pwmChannel, moes_duty256(&moes_chan[3], moes_dimCurve256(cw)));
-	pwmSetDuty256(moes_chan[4].pwmChannel, moes_duty256(&moes_chan[4], moes_dimCurve256(ww)));
+	pwmSetDuty256(moes_chan[0].pwmChannel, moes_duty256(&moes_chan[0], moes_dimTail256(moes_dimCurve256(r32), moes_tailScale256)));
+	pwmSetDuty256(moes_chan[1].pwmChannel, moes_duty256(&moes_chan[1], moes_dimTail256(moes_dimCurve256(g32), moes_tailScale256)));
+	pwmSetDuty256(moes_chan[2].pwmChannel, moes_duty256(&moes_chan[2], moes_dimTail256(moes_dimCurve256(b32), moes_tailScale256)));
+	pwmSetDuty256(moes_chan[3].pwmChannel, moes_duty256(&moes_chan[3], moes_dimTail256(moes_dimCurve256(cw), moes_tailScale256)));
+	pwmSetDuty256(moes_chan[4].pwmChannel, moes_duty256(&moes_chan[4], moes_dimTail256(moes_dimCurve256(ww), moes_tailScale256)));
+}
+
+/*********************************************************************
+ * @fn      moes_outSetTail256
+ *
+ * @brief   Build 42. Render a channel set with the extinction tail applied:
+ *          the curved values are scaled by level256/256 when level256 is
+ *          below one whole ZCL level. Callers pass the LEVEL-1 rendering's
+ *          channel values, so the output ramps from exactly level 1 to
+ *          exactly black. Identity when level256 >= 256.
+ */
+void moes_outSetTail256(u16 r, u16 g, u16 b, u16 cw, u16 ww, u16 level256)
+{
+	moes_tailScale256 = (level256 < 256u) ? level256 : 256u;
+	moes_outSet256(r, g, b, cw, ww);
+	moes_tailScale256 = 256u;
 }
 
 /*********************************************************************
@@ -344,6 +364,18 @@ void hwLight_colorUpdate_colorTemperature(u16 colorTemperatureMireds, u8 level)
 	level256 = ((u16)level) << 8;
 #endif
 
+	/* Build 42. Below one whole ZCL level - reached only by a with-on-off
+	 * extinction pacing the output to black - render level 1's split and scale
+	 * it down by the sub-level fraction. Splitting the sub-level value itself
+	 * hands the warm channel a fraction of a level and the curve's brightmin
+	 * floor then holds the light at 5.7% of full for the last second of the
+	 * fade before cutting; measured, see moes_dim.c. */
+	if(level256 < 256u){
+		temperatureToCW256(colorTemperatureMireds, 256u, &C256, &W256);
+		moes_outSetTail256(0, 0, 0, C256, W256, level256);
+		return;
+	}
+
 	temperatureToCW256(colorTemperatureMireds, level256, &C256, &W256);
 	moes_outSet256(0, 0, 0, C256, W256);
 }
@@ -414,6 +446,20 @@ void hwLight_colorUpdate_HSV2RGB(u8 hue, u8 saturation, u8 level)
 	if(level < ZCL_LEVEL_ATTR_MIN_LEVEL){ level = ZCL_LEVEL_ATTR_MIN_LEVEL; }
 
 	hsvToRGB(hue, saturation, level, &R, &G, &B);
+
+#ifdef ZCL_LEVEL_CTRL
+	{
+		/* Build 42: the same extinction tail as the colour-temperature path,
+		 * so a fade to off in colour mode ends at black instead of on the
+		 * brightmin plateau. Level is already clamped to the minimum above, so
+		 * R,G,B here are the level-1 rendering. */
+		u16 level256 = tuyaLight_levelWiden(level);
+		if(level256 < 256u){
+			moes_outSetTail256((u16)R << 8, (u16)G << 8, (u16)B << 8, 0, 0, level256);
+			return;
+		}
+	}
+#endif
 	moes_outSet(R, G, B, 0, 0);
 }
 

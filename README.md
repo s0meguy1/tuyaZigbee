@@ -74,6 +74,8 @@ What you can control, all of it readable back from the device:
 | `light_show_index` / `_spread` | fixture position in a room, and degrees of phase per position |
 | `light_show_takeover` | whether an ordinary Zigbee command stops the show |
 | `light_show_duration` | run for N milliseconds, then stop |
+| `light_show_cue_list` / `_cue_run` | a 32-entry timed sequence uploaded to the chip and played locally at 50 fps |
+| `light_show_cue_save` / `_cue_recall` / `_cue_slots` | (build 43) shows stored in four flash slots on the chip; slot 0 comes back at power-up, recall + run is one frame |
 | `light_show_density` | how much of a `burst` is sparks |
 | `light_show_cue` | several of the above plus a delay, in one atomic frame |
 | `light_show_cue_list` / `_cue_run` | up to 32 timed steps, uploaded and then played by the chip |

@@ -494,17 +494,22 @@ static void tuyaLight_moveToLevelProcess(u8 cmdId, moveToLvl_t *cmd)
 
 	levelInfo.startLevel256 = (u16)(pLevel->curLevel) << 8;
 	levelInfo.targetLevel256 = ((u16)cmd->level) << 8;
-	/* Build 40. The ramp stops at the dimmest LIT value and cuts from there,
-	 * which is what stock does: its factory block sets brightmin:1, so a lit channel
-	 * never goes below 1% duty and off is a step from there.
+	/* Build 41. A with-on-off move to the minimum ends with the light OFF, so
+	 * pace the rendered output all the way to black rather than stopping at
+	 * the dimmest lit value and cutting. The ZCL attribute still lands on the
+	 * commanded level; only the output continues below it (moes_dimCurve256()
+	 * ramps the brightmin floor out below one level).
 	 *
-	 * An earlier build 39 paced the output below that, all the way to zero, on
-	 * the theory that fading out beat cutting. It is a region stock never
-	 * drives - under 1% duty is an on-time below ~2.5 us at 4 kHz - and the
-	 * field trace found the fade dwelling there with unstable output. Stock
-	 * ran this hardware for nine months without the artefact, so match its
-	 * floor rather than inventing a lower one. If the last step is ever worth
-	 * softening, measure the driver's minimum stable duty first. */
+	 * Build 40 stopped at the floor because a field trace reported unstable
+	 * output below 1% duty. Bench photometry (2026-09-16) then measured the
+	 * floor itself at 5.7% of full light - the driver saturates high, so 1%
+	 * duty is not 1% light - which makes the cut from the floor a 38% step in
+	 * perceived brightness after a 1-2 s plateau. That is the cliff the user
+	 * sees. Whether the driver holds below the floor is what this build is
+	 * measured for; see MOES/bench_photometry/RESULTS_2026-09-16.md. */
+	if(levelInfo.withOnOff && (cmd->level <= ZCL_LEVEL_ATTR_MIN_LEVEL)){
+		levelInfo.targetLevel256 = 0;
+	}
 	levelInfo.stepsTotal = levelInfo.stepsRemaining;
 	levelInfo.paced = TRUE;
 

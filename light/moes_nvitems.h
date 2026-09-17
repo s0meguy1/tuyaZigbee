@@ -20,6 +20,10 @@
 /* Build 36: the fixture's light-show index, one byte (0..254, 0xFF none). Set
  * once at commissioning; written only when it changes. */
 #define MOES_NV_ITEM_FX_INDEX          0x74
+/* Build 43: stored light shows. MOES_FX_CUE_SLOTS consecutive items from this
+ * base (0x75..0x78), each a fixed 289-byte record: count u8 + 32 wire entries.
+ * Fixed length so a read can require the exact size (see the note below). */
+#define MOES_NV_ITEM_FX_CUE_SLOT0      0x75
 
 #if (MOES_NV_ITEM_SKIP_RST == MOES_NV_ITEM_BOOT_PROBATION) || \
     (MOES_NV_ITEM_SKIP_RST == MOES_NV_ITEM_BOOT_YOUNG) || \
@@ -32,6 +36,9 @@
     (MOES_NV_ITEM_BOOT_YOUNG == MOES_NV_ITEM_FX_INDEX) || \
     (MOES_NV_ITEM_OWNER == MOES_NV_ITEM_FX_INDEX)
 #error "MOES private NV item ids must be unique"
+#endif
+#if (MOES_NV_ITEM_FX_CUE_SLOT0 <= MOES_NV_ITEM_FX_INDEX) || (MOES_NV_ITEM_FX_CUE_SLOT0 + 3 > 0x7F)
+#error "MOES stored-show NV items must sit above the other private items"
 #endif
 
 /* The SDK does not require an exact length match when reading: it accepts any

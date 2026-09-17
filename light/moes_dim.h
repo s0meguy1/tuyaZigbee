@@ -54,6 +54,11 @@ unsigned int moes_dimCurve256(unsigned int v256);
 /* Active-level inversion, in the wide domain so it does not re-quantize. */
 unsigned int moes_dimInvert256(unsigned int v256, unsigned char activeLow);
 
+/* Build 42: extinction tail. Identity for level256 >= 256; below one whole ZCL
+ * level, scales a curved channel value by level256/256 so the level-1 rendering
+ * ramps to exactly zero. See moes_dim.c. */
+unsigned int moes_dimTail256(unsigned int curve256, unsigned int level256);
+
 /* Wide duty -> PWM compare ticks. The single remaining quantizer. */
 unsigned int moes_dimCmpTick(unsigned int v256, unsigned int pwmMaxTick);
 

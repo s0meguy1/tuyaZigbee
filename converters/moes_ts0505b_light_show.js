@@ -22,6 +22,8 @@
  *                        "delay":400}}` arms an explosion 400 ms ahead.
  *   light_show_cue_list  up to 32 timed entries uploaded to the chip, then
  *   light_show_cue_run   started with one frame and played at 50 fps locally.
+ *   light_show_cue_save / _recall / _slots   (build 43) shows stored in flash
+ *                        on the chip, four slots; slot 0 reloads at power-up.
  *   light_show_index     a persisted per-fixture index (set once, unicast!),
  *   light_show_spread    plus degrees of phase per index step, so one group
  *                        broadcast of pulse/strobe/chase/rainbow/wave runs
@@ -103,6 +105,7 @@ const tuya = require('zigbee-herdsman-converters/lib/tuya');
 const utils = require('zigbee-herdsman-converters/lib/utils');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const globalStore = require('zigbee-herdsman-converters/lib/store');
+const tz = require('zigbee-herdsman-converters/converters/toZigbee');
 const ea = exposes.access;
 
 const builtin = definitions.find((d) => (d.whiteLabel || []).some((w) => w.model === 'ZB-TDD6-RCW-4'));
@@ -148,6 +151,7 @@ const DP = {
     INDEX: 0x73, SPREAD: 0x74, LEVEL: 0x75, FADE: 0x76, DELAY: 0x77,
     DURATION: 0x78, TAKEOVER: 0x79, DENSITY: 0x7a, CUE_LOAD: 0x7b, CUE_RUN: 0x7c,
     CUE_COUNT: 0x7d,
+    CUE_SAVE: 0x7e, CUE_RECALL: 0x7f, CUE_SLOTS: 0x80,   // build 43: stored shows
 };
 
 const HUE_FOLLOW = 360;      // wire value meaning "follow the fixture's colour"
@@ -157,7 +161,8 @@ const TAKEOVER = ['release', 'hold'];   // index IS the wire value
 const CUE_RUN = ['stop', 'run', 'loop']; // index IS the wire value
 const CUE_MAX = 32;
 const CUE_WIRE_LEN = 9;
-const CUE_PER_FRAME = 6;     // 6 * 9 + 1 + 6 = 61 bytes: inside one unfragmented group frame
+const CUE_PER_FRAME = 7;     // 7 * 9 + 1 = 64 raw + 4 dp header + 2 seq = 70 bytes: inside one unfragmented frame (build 43: was 6)
+const CUE_SLOTS_MAX = 4;     // flash slots for stored shows on the chip (build 43)
 const FRAME_MAX = 76;        // bytes of Tuya payload that still fit one group broadcast
 
 // --- value helpers -------------------------------------------------------
@@ -267,6 +272,23 @@ const CUE_FIELDS = {
         const i = enumIndex('cue_run', CUE_RUN, v);
         return [dpEnum(DP.CUE_RUN, i), {light_show_cue_run: CUE_RUN[i]}];
     },
+    // Build 43: stored shows. Save needs a complete uploaded list on the chip;
+    // recall replaces the chip's list with a stored one (and stops a running list).
+    cue_save: (v) => {
+        const n = num('cue_save', v, 0, CUE_SLOTS_MAX - 1);
+        return [dpU8(DP.CUE_SAVE, n), {}];
+    },
+    cue_recall: (v) => {
+        const n = num('cue_recall', v, 0, CUE_SLOTS_MAX - 1);
+        return [dpU8(DP.CUE_RECALL, n), {}];
+    },
+};
+
+// bitmap -> "0,2", or "none"
+const slotsText = (v) => {
+    const s = [];
+    for (let i = 0; i < CUE_SLOTS_MAX; i++) if (Number(v) & (1 << i)) s.push(i);
+    return s.length ? s.join(',') : 'none';
 };
 
 // Cue-list entry -> 9 wire bytes:
@@ -287,12 +309,15 @@ const cueEntryBytes = (entry, i) => {
 
 // --- toZigbee ------------------------------------------------------------
 
+const lightShowSetResult = (entity, state) => utils.isGroup(entity) ? {state} : {};
+
 const tzLightShow = {
     key: [
         'light_show', 'light_show_speed', 'light_show_phase', 'light_show_hue', 'light_show_saturation',
         'light_show_index', 'light_show_spread', 'light_show_level', 'light_show_takeover',
         'light_show_density', 'light_show_duration',
         'light_show_cue', 'light_show_cue_list', 'light_show_cue_run',
+        'light_show_cue_save', 'light_show_cue_recall',
     ],
     convertSet: async (entity, key, value, meta) => {
         if (key === 'light_show_cue') {
@@ -310,7 +335,7 @@ const tzLightShow = {
             }
             if (!dpValues.length) throw new Error('light_show_cue is empty');
             await send(entity, dpValues);
-            return {state};
+            return lightShowSetResult(entity, state);
         }
 
         if (key === 'light_show_cue_list') {
@@ -330,19 +355,19 @@ const tzLightShow = {
                 const raw = Buffer.from([start, ...chunk.flat()]);
                 await send(entity, [dpRaw(DP.CUE_LOAD, raw)]);
             }
-            return {state: {light_show_cue_count: entries.length, light_show_cue_run: 'stop'}};
+            return lightShowSetResult(entity, {light_show_cue_count: entries.length, light_show_cue_run: 'stop'});
         }
 
         if (key === 'light_show_cue_run') {
             const [dp, state] = CUE_FIELDS.cue_run(value);
             await send(entity, [dp]);
-            return {state};
+            return lightShowSetResult(entity, state);
         }
 
         if (key === 'light_show') {
             const [dp, state] = CUE_FIELDS.effect(value);
             await send(entity, [dp]);
-            return {state};
+            return lightShowSetResult(entity, state);
         }
 
         if (key === 'light_show_index') {
@@ -351,19 +376,20 @@ const tzLightShow = {
             if (utils.isGroup(entity)) throw new Error('light_show_index is per fixture; publish it to a device topic, never a group');
             const n = value === 'none' ? INDEX_NONE : num('light_show_index', value, 0, INDEX_NONE);
             await send(entity, [dpU8(DP.INDEX, n)]);
-            return {state: {light_show_index: n}};
+            return lightShowSetResult(entity, {light_show_index: n});
         }
 
         const simple = {
             light_show_speed: 'speed', light_show_phase: 'phase', light_show_hue: 'hue',
             light_show_saturation: 'saturation', light_show_spread: 'spread', light_show_level: 'level',
             light_show_takeover: 'takeover', light_show_density: 'density', light_show_duration: 'duration',
+            light_show_cue_save: 'cue_save', light_show_cue_recall: 'cue_recall',
         };
         const field = simple[key];
         if (field) {
             const [dp, state] = CUE_FIELDS[field](value);
             await send(entity, [dp]);
-            return {state};
+            return lightShowSetResult(entity, state);
         }
     },
     convertGet: async (entity, key, meta) => {
@@ -394,6 +420,7 @@ const tuyaDatapoints = [
     [DP.DENSITY, 'light_show_density', asIs],
     [DP.CUE_RUN, 'light_show_cue_run', {from: (v) => CUE_RUN[v] ?? v}],
     [DP.CUE_COUNT, 'light_show_cue_count', asIs],
+    [DP.CUE_SLOTS, 'light_show_cue_slots', {from: (v) => slotsText(v)}],
 ];
 
 // --- definition ----------------------------------------------------------
@@ -418,12 +445,187 @@ const tuyaDatapoints = [
  * the plain light until its next interview, which is a safe way to be wrong.
  */
 const CUSTOM_BUILD_ID = /^v\d+\.\d+s\d+\.\d+$/;
+const MOES_MODEL_ID = 'TS0505B';
+const MOES_MANUFACTURER = '_TZ3210_b8jdosxo';
+const BRIGHTNESS_FLOOR = 13;
+const MAX_LOW_RISE_TRANSITION = 1;
+const WRAPPED_CONVERTER = Symbol.for('moes.ts0505b.brightnessFloor.wrapped');
 
 const hasCustomFirmware = (device) => {
     // The dummy device carries no attributes and creates no real entity; show
     // the controls there so the definition still documents itself.
     if (utils.isDummyDevice(device)) return true;
     return CUSTOM_BUILD_ID.test(device?.softwareBuildID ?? '');
+};
+
+const isCustomMoesDevice = (device) => device?.modelID === MOES_MODEL_ID &&
+    device?.manufacturerName === MOES_MANUFACTURER && hasCustomFirmware(device);
+
+const isCustomMoesEntity = (entity) => {
+    const endpoints = utils.isGroup(entity) ? entity.members : [entity];
+    return endpoints.some((endpoint) => isCustomMoesDevice(endpoint?.getDevice?.()));
+};
+
+const numericValue = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+};
+
+const stateValue = (value) => typeof value === 'string' ? value.toLowerCase() : value;
+
+const requestedTargetState = (message, meta) => {
+    const state = stateValue(message.state);
+    if (state === 'toggle') return stateValue(meta.state?.state) === 'on' ? 'off' : 'on';
+    if (state === undefined) return undefined;
+    return state;
+};
+
+const isUnsafeOrigin = (state) => {
+    const brightness = numericValue(state?.brightness);
+    return stateValue(state?.state) !== 'on' || brightness === undefined || brightness < BRIGHTNESS_FLOOR;
+};
+
+const hasUnsafeOrigin = (entity, meta) => {
+    if (!utils.isGroup(entity)) return isUnsafeOrigin(meta.state);
+    const memberStates = Object.values(meta.membersState ?? {});
+    return memberStates.length === 0 || memberStates.some(isUnsafeOrigin);
+};
+
+const cloneMetaWithMessage = (meta, message) => ({...meta, message});
+
+const transitionSeconds = (entity, meta) => utils.getTransition(entity, 'brightness', meta).time / 10;
+
+const withCappedRisingTransition = (entity, meta, turningOn) => {
+    if (!turningOn || !hasUnsafeOrigin(entity, meta)) return meta;
+    if (transitionSeconds(entity, meta) <= MAX_LOW_RISE_TRANSITION) return meta;
+    return cloneMetaWithMessage(meta, {...meta.message, transition: MAX_LOW_RISE_TRANSITION});
+};
+
+const setMessageBrightness = (meta, brightness, state) => {
+    const message = {...meta.message, brightness};
+    delete message.brightness_percent;
+    if (state !== undefined) message.state = state;
+    return cloneMetaWithMessage(meta, message);
+};
+
+const brightnessFromMessage = (message) => {
+    if (message.brightness != null) return numericValue(message.brightness);
+    if (message.brightness_percent != null) {
+        const percent = numericValue(message.brightness_percent);
+        return percent === undefined ? undefined : percent * 255 / 100;
+    }
+    return undefined;
+};
+
+const guardedOnOffMeta = (entity, meta) => {
+    const {message} = meta;
+    const requestedState = stateValue(message.state);
+    const targetState = requestedTargetState(message, meta);
+    const brightness = brightnessFromMessage(message);
+    const hasBrightness = message.brightness != null || message.brightness_percent != null;
+
+    if (requestedState === null || targetState === 'off') return {meta, turningOn: false};
+
+    if (hasBrightness) {
+        if (brightness === undefined || brightness < 0 || brightness > 255) return {meta, turningOn: targetState !== 'off'};
+        if (brightness === 0) return {meta: setMessageBrightness(meta, 0, 'OFF'), turningOn: false};
+        const guardedMeta = brightness < BRIGHTNESS_FLOOR ? setMessageBrightness(meta, BRIGHTNESS_FLOOR) : meta;
+        return {meta: guardedMeta, turningOn: true};
+    }
+
+    if (targetState !== 'on') return {meta, turningOn: false};
+    const fallback = numericValue(meta.state?.brightness) ?? 254;
+    const remembered = numericValue(globalStore.getValue(entity, 'brightness', fallback)) ?? fallback;
+    const brightnessToRestore = Math.min(254, Math.max(BRIGHTNESS_FLOOR, remembered));
+    return {meta: setMessageBrightness(meta, brightnessToRestore), turningOn: true};
+};
+
+const floorMeta = (entity, meta, transition) => {
+    const message = {...meta.message, state: null, brightness: BRIGHTNESS_FLOOR};
+    delete message.brightness_percent;
+    delete message.brightness_move;
+    delete message.brightness_move_onoff;
+    delete message.brightness_step;
+    delete message.brightness_step_onoff;
+    if (transition !== undefined) message.transition = transition;
+    const boundedMeta = cloneMetaWithMessage(meta, message);
+    return withCappedRisingTransition(entity, boundedMeta, true);
+};
+
+const setFloorLevel = async (entity, meta, transition) =>
+    await tz.light_onoff_brightness.convertSet(entity, 'brightness', BRIGHTNESS_FLOOR, floorMeta(entity, meta, transition));
+
+const currentBrightness = async (entity, meta) => {
+    const cachedBrightness = numericValue(meta.state?.brightness);
+    if (cachedBrightness !== undefined) return cachedBrightness;
+    const target = utils.getEntityOrFirstGroupMember(entity);
+    if (!target) return undefined;
+    try {
+        const result = await target.read('genLevelCtrl', ['currentLevel']);
+        return numericValue(result?.currentLevel);
+    } catch {
+        return undefined;
+    }
+};
+
+const wrapConverter = (converter, guard) => {
+    if (converter.convertSet[WRAPPED_CONVERTER]) return;
+    const originalConvertSet = converter.convertSet;
+    const wrappedConvertSet = async (entity, key, value, meta) => await guard(originalConvertSet, entity, key, value, meta);
+    wrappedConvertSet[WRAPPED_CONVERTER] = true;
+    converter.convertSet = wrappedConvertSet;
+};
+
+const guardedOnOff = async (originalConvertSet, entity, key, value, meta) => {
+    if (!isCustomMoesEntity(entity)) return await originalConvertSet(entity, key, value, meta);
+    const guarded = guardedOnOffMeta(entity, meta);
+    const guardedMeta = withCappedRisingTransition(entity, guarded.meta, guarded.turningOn);
+    return await originalConvertSet(entity, key, value, guardedMeta);
+};
+
+const guardedStep = async (originalConvertSet, entity, key, value, meta) => {
+    if (!isCustomMoesEntity(entity) || Number(value) >= 0) return await originalConvertSet(entity, key, value, meta);
+    const current = await currentBrightness(entity, meta);
+    const next = current === undefined ? undefined : current + Number(value);
+    if (key.endsWith('_onoff') && next !== undefined && next <= 0) {
+        return await originalConvertSet(entity, key, value, meta);
+    }
+    if (next === undefined || next < BRIGHTNESS_FLOOR) return await setFloorLevel(entity, meta);
+    return await originalConvertSet(entity, key, value, meta);
+};
+
+const guardedMove = async (originalConvertSet, entity, key, value, meta) => {
+    if (!isCustomMoesEntity(entity)) return await originalConvertSet(entity, key, value, meta);
+    const rate = numericValue(value);
+    if (rate === undefined || rate === 0 || value === 'stop') {
+        const result = await originalConvertSet(entity, key, value, meta);
+        const brightness = numericValue(result?.state?.brightness);
+        if (stateValue(result?.state?.state) === 'on' && brightness !== undefined && brightness < BRIGHTNESS_FLOOR) {
+            const floorResult = await setFloorLevel(entity, meta);
+            return {state: {...result.state, ...floorResult?.state, state: 'ON'}};
+        }
+        return result;
+    }
+    if (rate > 0) return await originalConvertSet(entity, key, value, meta);
+    const current = await currentBrightness(entity, meta);
+    if (current === undefined || current <= BRIGHTNESS_FLOOR) return await setFloorLevel(entity, meta);
+    return await setFloorLevel(entity, meta, (current - BRIGHTNESS_FLOOR) / Math.abs(rate));
+};
+
+wrapConverter(tz.light_onoff_brightness, guardedOnOff);
+wrapConverter(tz.light_brightness_step, guardedStep);
+wrapConverter(tz.light_brightness_move, guardedMove);
+
+const builtinBrightnessConverter = (builtin.toZigbee ?? []).find((converter) => converter.key?.includes('brightness'));
+if (!builtinBrightnessConverter) {
+    throw new Error('moes_ts0505b_light_show: built-in TS0505B_1 brightness converter not found - z2m changed, review before using');
+}
+
+const tzMoesBrightness = {
+    ...builtinBrightnessConverter,
+    convertSet: async (entity, key, value, meta) => isCustomMoesEntity(entity) ?
+        await tz.light_onoff_brightness.convertSet(entity, key, value, meta) :
+        await builtinBrightnessConverter.convertSet(entity, key, value, meta),
 };
 
 // exposes.composite has withFeature() only; add the whole list in one go.
@@ -446,6 +648,8 @@ const cueFeatures = () => [
     exposes.enum('takeover', ea.SET, TAKEOVER),
     exposes.numeric('density', ea.SET).withValueMin(0).withValueMax(100).withUnit('%'),
     exposes.enum('cue_run', ea.SET, CUE_RUN),
+    exposes.numeric('cue_save', ea.SET).withValueMin(0).withValueMax(CUE_SLOTS_MAX - 1).withDescription('Store the chip\'s complete cue list in flash slot 0-3.'),
+    exposes.numeric('cue_recall', ea.SET).withValueMin(0).withValueMax(CUE_SLOTS_MAX - 1).withDescription('Load flash slot 0-3 into the cue list; with cue_run in the same frame, recall and start a stored show together.'),
 ];
 
 const cueListEntry = () => exposes.composite('cue', 'cue', ea.SET)
@@ -476,7 +680,7 @@ Object.assign(definition, {
     // inherited intact. An earlier draft assigned `exposes` from
     // `builtin.exposes` - which is undefined on a modern extend-based
     // definition - and would have replaced every light control with just these.
-    toZigbee: [...(builtin.toZigbee ?? []), tzLightShow],
+    toZigbee: [tzMoesBrightness, ...(builtin.toZigbee ?? []).filter((converter) => converter !== builtinBrightnessConverter), tzLightShow],
     fromZigbee: [...(builtin.fromZigbee ?? []), tuya.fz.datapoints],
     meta: {...(builtin.meta ?? {}), tuyaDatapoints},
 
@@ -539,14 +743,21 @@ Object.assign(definition, {
             .withFeatures(cueFeatures()),
         exposes.list('light_show_cue_list', ea.SET, cueListEntry())
             .withDescription(
-                'Upload a sequence of up to 32 timed entries to the chip (6 per frame, so 32 entries cost 6 frames - do it before the show). ' +
+                'Upload a sequence of up to 32 timed entries to the chip (7 per frame, so 32 entries cost 5 frames - do it before the show). ' +
                 'Then light_show_cue_run "run" plays the whole thing at 50 fps locally: one frame for the show. ' +
                 'Omitted fields keep their value; effect "stop" releases the output while the sequence continues. ' +
-                'Held in RAM: re-upload after a power cut.'),
+                'Held in RAM until light_show_cue_save stores it in a flash slot (build 43): stored shows survive power cuts, slot 0 comes back by itself at power-up, ' +
+                'and light_show_cue_recall brings any slot back without an upload.'),
         exposes.enum('light_show_cue_run', ea.ALL, CUE_RUN)
             .withDescription('"run" plays the uploaded list once, "loop" repeats it (the last entry\'s t is the loop length), "stop" aborts it and stops the effect.'),
         exposes.numeric('light_show_cue_count', ea.STATE)
             .withDescription('Entries the chip holds (device report).'),
+        exposes.numeric('light_show_cue_save', ea.SET).withValueMin(0).withValueMax(CUE_SLOTS_MAX - 1)
+            .withDescription('Build 43. Store the uploaded, complete cue list in flash slot 0-3 on the chip. Survives power cuts; slot 0 is reloaded at power-up.'),
+        exposes.numeric('light_show_cue_recall', ea.SET).withValueMin(0).withValueMax(CUE_SLOTS_MAX - 1)
+            .withDescription('Build 43. Load a stored show from flash slot 0-3 into the cue list, replacing it. In a light_show_cue frame with cue_run, one broadcast recalls and starts a stored show on a whole group.'),
+        exposes.text('light_show_cue_slots', ea.STATE)
+            .withDescription('Flash slots holding a stored show (device report), e.g. "0,2".'),
     ],
 });
 

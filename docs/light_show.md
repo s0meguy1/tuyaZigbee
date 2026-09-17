@@ -137,13 +137,40 @@ the converter refuses anything larger.
 
 Up to 32 entries of `{t, effect, speed, hue, saturation, level, fade}`; `t` in
 ms from the start, entries in time order, omitted fields keep their value,
-`effect: stop` releases the output while the sequence continues. Uploaded six
-per frame (`light_show_cue_list`, so 32 entries is six frames, sent before the
-show), started with `light_show_cue_run: run` (or `loop`, where the last
-entry's `t` is the loop length and its settings apply at the wrap). `stop`
-aborts the sequence and the effect; so does `light_show: stop`. The list is
-RAM only: re-upload after a power cut. A list with a lost frame refuses to run
-(`/get` shows `light_show_cue_count` and `light_show_cue_run` stuck at `stop`).
+`effect: stop` releases the output while the sequence continues. Uploaded seven
+per frame (`light_show_cue_list`, so 32 entries is five frames, sent before the
+show; six per frame before build 43), started with `light_show_cue_run: run`
+(or `loop`, where the last entry's `t` is the loop length and its settings apply
+at the wrap). `stop` aborts the sequence and the effect; so does
+`light_show: stop`. A list with a lost frame refuses to run (`/get` shows
+`light_show_cue_count` and `light_show_cue_run` stuck at `stop`). The uploaded
+list is RAM until it is **stored** (below); before build 43 it was RAM only and
+every power cut meant re-uploading to every fixture.
+
+## Stored shows (build 43)
+
+The chip has four flash slots for shows. `light_show_cue_save: n` (0-3) stores
+the complete uploaded list in slot `n`; it survives power cuts and reboots.
+`light_show_cue_recall: n` loads slot `n` back into the cue list, replacing
+whatever is there and stopping a running list. **Slot 0 is the default show:
+it is reloaded into the cue list at power-up**, so after a power cut
+`light_show_cue_run: run` plays it with no upload at all.
+
+Recall and run go in one frame, and a frame goes to a group:
+
+```
+zigbee2mqtt/kitchen_ceiling/set  {"light_show_cue": {"cue_recall": 2, "cue_run": "run"}}
+```
+
+is one broadcast that recalls slot 2 on every member and starts them together.
+The upload therefore happens once per show per fixture (five frames each, or
+five broadcasts for a whole group - verify each member's
+`light_show_cue_count` with a `/get` afterwards), and every performance after
+that is one frame. `save` and `recall` in the same frame are rejected, as is a
+save of an incomplete list or a recall of an empty slot; the report carries
+`light_show_cue_slots` (e.g. `"0,2"`) so a `/get` shows what each fixture
+holds. Records are 289 bytes each in the app's NV module; a show is written
+once when saved, never per run.
 
 The ceiling half of the self-destruct show, as a cue list (P1 = 23.19 s,
 det_lead folded into the trigger's `delay`):
@@ -176,7 +203,8 @@ different `index` values, and the white pops stay what they were: one
 ## Reports
 
 The chip reports every value (a Tuya dataReport, decoded by the converter into
-the same keys) after a **unicast** write, after a `/get`, and when it changes
+the same keys, including `light_show_cue_slots` from build 43) after a
+**unicast** write, after a `/get`, and when it changes
 state on its own after a unicast started it (a duration ran out, a cue list
 ended). Group frames never trigger reports: nineteen fixtures answering every
 cue would take the airtime the next cue needs. After a group write the

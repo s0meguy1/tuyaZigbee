@@ -279,11 +279,35 @@ static void test_cw_split_is_conservative(void)
     }
 }
 
+/* Build 42: the extinction tail scales the level-1 rendering below one level and
+ * is the identity at and above it, so the steady map is untouched. */
+static void test_extinction_tail_only_below_one_level(void)
+{
+    unsigned int v, l, prev = 0;
+    unsigned int one = moes_dimCurve256(256u);
+
+    for (v = 1; v <= MOES_DIM_MAX256; v += 251)
+        check(moes_dimTail256(moes_dimCurve256(v), 256u) == moes_dimCurve256(v),
+              "tail must be the identity at one whole level");
+    check(moes_dimTail256(one, 65535u) == one, "tail must be the identity above one level");
+    check(moes_dimTail256(one, 0u) == 0u, "tail must reach exactly black");
+    for (l = 0; l <= 256u; l++) {
+        unsigned int t = moes_dimTail256(one, l);
+        check(t >= prev, "tail must be monotone in the sub-level fraction");
+        prev = t;
+    }
+    check(prev == one, "tail must land exactly on the level-1 rendering");
+    /* 256 distinct sub-level outputs: no plateau anywhere in the tail */
+    check(moes_dimTail256(one, 1u) > 0u, "the first sub-level step must still be lit");
+    printf("  extinction tail: identity at >=1 level, %u -> 0 below it, monotone\n", one);
+}
+
 int main(void)
 {
     printf("build 38 output-stage arithmetic (real light/moes_dim.c)\n");
 
     test_curve_is_monotone_and_hits_both_end_stops();
+    test_extinction_tail_only_below_one_level();
     test_curve_shape_is_unchanged();
     test_bottom_end_no_longer_collapses();
     test_five_second_fade_resolves();

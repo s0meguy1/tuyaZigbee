@@ -137,6 +137,14 @@ bool lightFx_applyFrame(const moes_fxFrame_t *f);
 bool lightFx_cueLoad(u8 start, const u8 *wire, u8 n);
 bool lightFx_cueRun(u8 mode);
 
+/* Build 43: stored shows, MOES_FX_CUE_SLOTS flash slots. Save needs a complete
+ * RAM list (every entry arrived); recall replaces the RAM list and stops a
+ * running one. Slot 0 is restored into RAM by lightFx_nvLoad() at boot, so a
+ * cue_run after a power cut plays the stored show without an upload. */
+bool lightFx_cueSave(u8 slot);
+bool lightFx_cueRecall(u8 slot);
+u8   lightFx_cueSlots(void);
+
 /* Fill a report with the current state. */
 void lightFx_report(moes_fxReport_t *out);
 

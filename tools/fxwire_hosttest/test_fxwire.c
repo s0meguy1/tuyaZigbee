@@ -82,6 +82,7 @@ int main(void)
 {
 	moes_fxFrame_t f;
 	moes_fxWireStatus_e st;
+	moes_fxWireStatus_e pst;
 
 	printf("=== a build-27 single-datapoint frame still parses exactly as before ===\n");
 	{
@@ -237,7 +238,7 @@ int main(void)
 	printf("=== report encodes every field and decodes with the same table ===\n");
 	{
 		unsigned char buf[MOES_FX_REPORT_MAX_LEN];
-		moes_fxReport_t st0 = { 12, 80, 90, MOES_FX_HUE_FOLLOW, 100, 7, 19, 254, 1, 5000, 35, 2, 12 };
+		moes_fxReport_t st0 = { 12, 80, 90, MOES_FX_HUE_FOLLOW, 100, 7, 19, 254, 1, 5000, 35, 2, 12, 0 };
 		moes_fxFrame_t back;
 		unsigned int n = moes_fxWireReportBuild(buf, sizeof buf, 0x1234, &st0);
 
@@ -245,10 +246,11 @@ int main(void)
 		check("report builds", n > 0);
 		check("report fits an unfragmented unicast (<= 80 bytes of ZCL payload)", n <= 80);
 		check("seq is first, big-endian", buf[0] == 0x12 && buf[1] == 0x34);
-		/* Everything but cue_count is a datapoint the parser knows, so the report
-		 * must parse back through the same code path with the same values. Strip
-		 * the trailing cue_count datapoint (5 bytes) for that round trip. */
-		st = moes_fxWireParse(buf, n - 5, EF_MAX, &back, cueFn, NULL);
+		/* Everything but the two report-only datapoints (cue_count, and from
+		 * build 43 cue_slots) is a datapoint the parser knows, so the report must
+		 * parse back through the same code path with the same values. Strip the
+		 * two trailing report-only datapoints (5 bytes each) for that round trip. */
+		st = moes_fxWireParse(buf, n - 10, EF_MAX, &back, cueFn, NULL);
 		check("report parses back", st == MOES_FXW_OK);
 		check("effect round-trips", back.effect == 12);
 		check("speed round-trips", back.speed == 80);
@@ -261,12 +263,53 @@ int main(void)
 		check("duration round-trips", back.duration == 5000);
 		check("density round-trips", back.density == 35);
 		check("cue_run round-trips", back.cueRun == 2);
-		check("cue_count is the last datapoint", buf[n - 5] == MOES_DP_CUE_COUNT && buf[n - 1] == 12);
+		check("cue_count is the second-last datapoint", buf[n - 10] == MOES_DP_CUE_COUNT && buf[n - 6] == 12);
+		check("cue_slots is the last datapoint (build 43)", buf[n - 5] == MOES_DP_CUE_SLOTS && buf[n - 4] == MOES_DPT_BITMAP);
 		check("too small a buffer yields 0, never a truncated report", moes_fxWireReportBuild(buf, 40, 0, &st0) == 0);
 		st0.hue = 220;
 		n = moes_fxWireReportBuild(buf, sizeof buf, 1, &st0);
-		st = moes_fxWireParse(buf, n - 5, EF_MAX, &back, cueFn, NULL);
+		st = moes_fxWireParse(buf, n - 10, EF_MAX, &back, cueFn, NULL);
 		check("explicit hue round-trips", st == MOES_FXW_OK && back.hue == 220);
+	}
+
+	printf("=== build 43: stored shows - save/recall datapoints and the slot bitmap ===\n");
+	{
+		unsigned char rep[128];
+		unsigned int rlen, i, seen = 0;
+		moes_fxReport_t st;
+
+		fstart(40); fvalue(MOES_DP_CUE_SAVE, 2);
+		pst = moes_fxWireParse(frame, flen, EF_MAX, &f, cueFn, NULL);
+		check("cue_save 2 parses OK", pst == MOES_FXW_OK && f.present == MOES_FXF_CUE_SAVE && f.cueSave == 2);
+
+		fstart(41); fvalue(MOES_DP_CUE_RECALL, 1); fenum(MOES_DP_CUE_RUN, 1);
+		pst = moes_fxWireParse(frame, flen, EF_MAX, &f, cueFn, NULL);
+		check("recall + run in one frame parses OK", pst == MOES_FXW_OK && f.present == (MOES_FXF_CUE_RECALL | MOES_FXF_CUE_RUN) && f.cueRecall == 1 && f.cueRun == 1);
+		check("recall + run fits one group frame", flen <= 76);
+
+		fstart(42); fvalue(MOES_DP_CUE_SAVE, 4);
+		pst = moes_fxWireParse(frame, flen, EF_MAX, &f, cueFn, NULL);
+		check("slot 4 is INVALID (four slots, 0..3)", pst == MOES_FXW_INVALID);
+
+		fstart(43); fvalue(MOES_DP_CUE_SAVE, 0); fvalue(MOES_DP_CUE_RECALL, 1);
+		pst = moes_fxWireParse(frame, flen, EF_MAX, &f, cueFn, NULL);
+		check("save and recall together are INVALID", pst == MOES_FXW_INVALID);
+
+		memset(&st, 0, sizeof st);
+		st.hue = MOES_FX_HUE_FOLLOW; st.cueSlots = 0x05;
+		rlen = moes_fxWireReportBuild(rep, sizeof rep, 1, &st);
+		check("report builds", rlen > 0);
+		for(i = 2u; i + 4 <= rlen; ){   /* 2 = seq header */
+			unsigned int n = ((unsigned int)rep[i + 2] << 8) | rep[i + 3];
+			if(rep[i] == MOES_DP_CUE_SLOTS){
+				seen = 1;
+				check("cue_slots reports as a 1-byte bitmap", rep[i + 1] == MOES_DPT_BITMAP && n == 1 && rep[i + 4] == 0x05);
+			}
+			i += 4 + n;
+		}
+		check("report carries cue_slots", seen);
+		check("report still fits its declared maximum", rlen <= MOES_FX_REPORT_MAX_LEN);
+		printf("  report is %u bytes of %u\n", rlen, (unsigned)MOES_FX_REPORT_MAX_LEN);
 	}
 
 	if(failures){

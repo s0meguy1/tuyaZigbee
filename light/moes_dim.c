@@ -36,6 +36,35 @@ unsigned int moes_dimCurve256(unsigned int v256)
 	       (unsigned int)MOES_BRIGHT_MAX_PCT;
 }
 
+/* Build 42. The extinction tail.
+ *
+ * Measured with calibrated photometry on the bench fixture (2026-09-16,
+ * MOES/bench_photometry/RESULTS_2026-09-16.md): light is linear in duty from
+ * level 1 down to the brightmin floor, but the driver saturates above roughly a
+ * third of the duty range, so the 1% floor is 5.7% of FULL light - 38% of the
+ * perceived range. A with-on-off fade to off paces its 8.8 level to zero, the
+ * curve above floors every non-zero channel at 1%, and the light therefore sits
+ * on that plateau for 1-2 s and then cuts. That plateau-and-cut is the cliff.
+ *
+ * Build 41 ramped the floor out inside moes_dimCurve256() for channel values
+ * below 256. Wrong place: the colour-temperature split hands the warm channel
+ * less than one level's worth for ZCL levels 1-4, so steady levels 1-4 dimmed
+ * (level 1 by 37%, measured). This scales the LEVEL-1 rendering instead, by the
+ * sub-level fraction, and is applied by moes_outSet256() after the curve. No
+ * steady state can ask for level256 < 256 (ZCL level 1 is the minimum), so
+ * every whole level renders byte-for-byte as build 40 did.
+ *
+ * Build 41's fade recordings showed the driver following the tail
+ * monotonically down to under 0.1% duty with no plateau, so the region below
+ * the floor that build 40 avoided is fine on this hardware. */
+unsigned int moes_dimTail256(unsigned int curve256, unsigned int level256)
+{
+	if(level256 >= 256u){
+		return curve256;
+	}
+	return (curve256 * level256) / 256u;
+}
+
 unsigned int moes_dimInvert256(unsigned int v256, unsigned char activeLow)
 {
 	if(v256 > MOES_DIM_MAX256){

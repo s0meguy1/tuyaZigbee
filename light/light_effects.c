@@ -82,6 +82,15 @@ static u32  fxCueLoaded;   /* bit i set once entry i has arrived */
 static u8   fxCueNext;
 static u32  fxCueStartMs;
 
+/* Build 43: stored shows. One fixed-size NV record per flash slot, so the
+ * read can insist on the exact stored length (moes_nvitems.h explains why a
+ * loose length match bit build 30). Unused entries are zero. */
+typedef struct {
+	u8 count;
+	u8 entries[MOES_FX_CUE_MAX * MOES_FX_CUE_WIRE_LEN];
+} fxCueNv_t;
+static u8   fxCueSlots;    /* bit n = slot n holds a show; probed at boot, kept on save */
+
 /* 64-step sine, amplitude 0..255, phase 0..63 == 0..2pi */
 static const u16 fxSine[64] = {
 	  0,  25,  50,  74,  98, 120, 142, 162, 180, 197, 212, 225, 235, 244, 250, 254,
@@ -612,6 +621,18 @@ bool lightFx_applyFrame(const moes_fxFrame_t *f)
 	if(f->present & MOES_FXF_LEVEL){
 		fxSetLevel(f->level, (f->present & MOES_FXF_FADE) ? f->fade : 0);
 	}
+	/* Build 43: a recall lands before the effect and the sequencer, so one
+	 * frame can say "recall slot 2 and run it". */
+	if(f->present & MOES_FXF_CUE_RECALL){
+		if(!lightFx_cueRecall(f->cueRecall)){
+			return FALSE;
+		}
+	}
+	if(f->present & MOES_FXF_CUE_SAVE){
+		if(!lightFx_cueSave(f->cueSave)){
+			return FALSE;
+		}
+	}
 	if(f->present & MOES_FXF_EFFECT){
 		if(!lightFx_start(f->effect)){
 			return FALSE;
@@ -625,6 +646,23 @@ bool lightFx_applyFrame(const moes_fxFrame_t *f)
 	return TRUE;
 }
 
+/* Every entry must decode to acceptable values. Shared by an upload and a
+ * recall from flash, so a record that somehow went bad in NV is refused the
+ * same way a bad upload is. */
+static bool fxCueValidate(const u8 *wire, u8 n)
+{
+	u8 i;
+
+	for(i = 0; i < n; i++){
+		moes_fxCue_t c;
+		moes_fxCueDecode(wire + (u16)i * MOES_FX_CUE_WIRE_LEN, &c);
+		if(c.effect != MOES_FX_KEEP8 && c.effect >= MOES_EF_MAX){ return FALSE; }
+		if(c.speed > 100){ return FALSE; }
+		if(c.sat != MOES_FX_KEEP8 && c.sat > 100){ return FALSE; }
+	}
+	return TRUE;
+}
+
 bool lightFx_cueLoad(u8 start, const u8 *wire, u8 n)
 {
 	u8 i;
@@ -634,12 +672,8 @@ bool lightFx_cueLoad(u8 start, const u8 *wire, u8 n)
 	}
 	/* Validate everything before touching the list, so a bad entry rejects the
 	 * frame whole rather than half-loading it. */
-	for(i = 0; i < n; i++){
-		moes_fxCue_t c;
-		moes_fxCueDecode(wire + (u16)i * MOES_FX_CUE_WIRE_LEN, &c);
-		if(c.effect != MOES_FX_KEEP8 && c.effect >= MOES_EF_MAX){ return FALSE; }
-		if(c.speed > 100){ return FALSE; }
-		if(c.sat != MOES_FX_KEEP8 && c.sat > 100){ return FALSE; }
+	if(!fxCueValidate(wire, n)){
+		return FALSE;
 	}
 
 	if(start == 0){
@@ -668,6 +702,77 @@ static bool fxCueComplete(void)
 	}
 	need = (g_moesFx.cueCount >= 32) ? 0xFFFFFFFFu : ((1u << g_moesFx.cueCount) - 1u);
 	return (fxCueLoaded & need) == need;
+}
+
+/* ---- Build 43: stored shows ---- */
+
+static void fxCueSlotProbe(void)
+{
+	u8 slot;
+
+	fxCueSlots = 0;
+	for(slot = 0; slot < MOES_FX_CUE_SLOTS; slot++){
+		u16 storedLen = 0;
+		if(nv_flashSingleItemSizeGet(NV_MODULE_APP, (u8)(MOES_NV_ITEM_FX_CUE_SLOT0 + slot), &storedLen) == NV_SUCC &&
+		   storedLen == sizeof(fxCueNv_t)){
+			fxCueSlots |= (u8)(1u << slot);
+		}
+	}
+}
+
+bool lightFx_cueSave(u8 slot)
+{
+	fxCueNv_t rec;
+
+	if(slot >= MOES_FX_CUE_SLOTS || !fxCueComplete()){
+		/* Nothing complete to store: refusing is visible as a rejected frame. */
+		return FALSE;
+	}
+	memset(&rec, 0, sizeof(rec));
+	rec.count = g_moesFx.cueCount;
+	memcpy(rec.entries, fxCue, (u16)rec.count * MOES_FX_CUE_WIRE_LEN);
+	/* After stack_init() by construction: this is a command handler. One
+	 * 289-byte record per save; a show is stored once, not per run. */
+	if(nv_flashWriteNew(1, NV_MODULE_APP, (u8)(MOES_NV_ITEM_FX_CUE_SLOT0 + slot), sizeof(rec), (u8 *)&rec) != NV_SUCC){
+		return FALSE;
+	}
+	fxCueSlots |= (u8)(1u << slot);
+	return TRUE;
+}
+
+bool lightFx_cueRecall(u8 slot)
+{
+	fxCueNv_t rec;
+	u16 storedLen = 0;
+	u8 i;
+
+	if(slot >= MOES_FX_CUE_SLOTS || !(fxCueSlots & (1u << slot))){
+		return FALSE;
+	}
+	if(nv_flashSingleItemSizeGet(NV_MODULE_APP, (u8)(MOES_NV_ITEM_FX_CUE_SLOT0 + slot), &storedLen) != NV_SUCC ||
+	   storedLen != sizeof(rec) ||
+	   nv_flashReadNew(1, NV_MODULE_APP, (u8)(MOES_NV_ITEM_FX_CUE_SLOT0 + slot), sizeof(rec), (u8 *)&rec) != NV_SUCC){
+		return FALSE;
+	}
+	if(rec.count == 0 || rec.count > MOES_FX_CUE_MAX || !fxCueValidate(rec.entries, rec.count)){
+		return FALSE;
+	}
+	/* Same as a fresh upload starting at 0: a running list stops first, its
+	 * entries are about to change under it. The effect it started carries on
+	 * until something stops it, exactly as with an upload. */
+	g_moesFx.cueRun = 0;
+	memcpy(fxCue, rec.entries, (u16)rec.count * MOES_FX_CUE_WIRE_LEN);
+	g_moesFx.cueCount = rec.count;
+	fxCueLoaded = 0;
+	for(i = 0; i < rec.count; i++){
+		fxCueLoaded |= (1u << i);
+	}
+	return TRUE;
+}
+
+u8 lightFx_cueSlots(void)
+{
+	return fxCueSlots;
 }
 
 bool lightFx_cueRun(u8 mode)
@@ -707,6 +812,7 @@ void lightFx_report(moes_fxReport_t *out)
 	out->density = g_moesFx.density;
 	out->cueRun = g_moesFx.cueRun;
 	out->cueCount = g_moesFx.cueCount;
+	out->cueSlots = fxCueSlots;
 }
 
 void lightFx_init(void){
@@ -724,6 +830,13 @@ void lightFx_nvLoad(void){
 
 	if(moes_nvReadByteExact(MOES_NV_ITEM_FX_INDEX, &v) == NV_SUCC){
 		g_moesFx.index = v;
+	}
+
+	/* Build 43: slot 0 is the default show. Bring it into RAM so a cue_run
+	 * after a power cut plays without an upload. */
+	fxCueSlotProbe();
+	if(fxCueSlots & 1u){
+		(void)lightFx_cueRecall(0);
 	}
 }
 

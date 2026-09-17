@@ -37,6 +37,13 @@
  *                          bytes, applied at once (never deferred)
  *   0x7C cue_run    enum   0 = abort + stop, 1 = run once, 2 = loop
  *   0x7D cue_count  value  report only
+ *   0x7E cue_save   value  0..3 (build 43): store the complete RAM cue list in
+ *                          flash slot n; survives power cuts
+ *   0x7F cue_recall value  0..3 (build 43): load flash slot n into the RAM cue
+ *                          list (stops a running list). Combine with cue_run in
+ *                          one frame to recall and start a stored show together.
+ *                          save and recall in the same frame is rejected.
+ *   0x80 cue_slots  bitmap report only (build 43): bit n = slot n holds a show
  *
  * A frame is atomic: one bad value rejects the whole frame and nothing in it is
  * applied, so a show can never half-land. Unknown datapoint ids are rejected
@@ -70,6 +77,11 @@ extern "C" {
 #define MOES_DP_CUE_LOAD    0x7B
 #define MOES_DP_CUE_RUN     0x7C
 #define MOES_DP_CUE_COUNT   0x7D
+/* Build 43: stored shows. */
+#define MOES_DP_CUE_SAVE    0x7E
+#define MOES_DP_CUE_RECALL  0x7F
+#define MOES_DP_CUE_SLOTS   0x80
+#define MOES_FX_CUE_SLOTS   4u
 
 /* Tuya datapoint payload types. */
 #define MOES_DPT_RAW        0
@@ -108,6 +120,8 @@ extern "C" {
 #define MOES_FXF_TAKEOVER   (1u << 11)
 #define MOES_FXF_DENSITY    (1u << 12)
 #define MOES_FXF_CUE_RUN    (1u << 13)
+#define MOES_FXF_CUE_SAVE   (1u << 14)
+#define MOES_FXF_CUE_RECALL (1u << 15)
 
 typedef struct {
 	unsigned short present;      /* MOES_FXF_* bits */
@@ -125,6 +139,8 @@ typedef struct {
 	unsigned char  takeover;
 	unsigned char  density;
 	unsigned char  cueRun;
+	unsigned char  cueSave;      /* build 43: flash slot to store the list in */
+	unsigned char  cueRecall;    /* build 43: flash slot to load the list from */
 } moes_fxFrame_t;
 
 /*
@@ -188,6 +204,7 @@ typedef struct {
 	unsigned char  density;
 	unsigned char  cueRun;
 	unsigned char  cueCount;
+	unsigned char  cueSlots;     /* build 43: bit n = flash slot n holds a show */
 } moes_fxReport_t;
 
 /* Worst-case encoded size of moes_fxWireReportBuild(). */
