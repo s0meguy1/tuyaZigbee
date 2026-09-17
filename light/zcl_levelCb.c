@@ -62,6 +62,11 @@ typedef struct{
 	u8	withOnOff;
 	/* Whether this command has already issued its with-on-off Off. */
 	u8	offSent;
+	/* Build 44. Whether this with-on-off command is heading DOWN to the
+	 * minimum. Only such a ramp may switch the light off when its level reads
+	 * the minimum; an UP ramp from an off fixture passes through level 1 on
+	 * its first ticks and must not. */
+	u8	downToMin;
 	/* Build 39. Perceptual pacing of a transition, for commands that have an
 	 * explicit destination. See tuyaLight_levelPaced(). */
 	u16 startLevel256;
@@ -81,6 +86,7 @@ static zcl_levelInfo_t levelInfo = {
 	.hasTarget			= 0,
 	.withOnOff			= 0,
 	.offSent			= 0,
+	.downToMin			= 0,
 	.startLevel256		= 0,
 	.targetLevel256		= 0,
 	.stepsTotal			= 0,
@@ -359,7 +365,16 @@ static void tuyaLight_levelWithOnOffChk(void)
 		return;
 	}
 
-	if(levelInfo.withOnOff && !levelInfo.offSent &&
+	/* Build 44. Only a ramp heading DOWN to the minimum switches off when its
+	 * level reads the minimum (ZCL: "if the level is decreased to the minimum
+	 * level, OnOff shall be set to Off"). Builds 40-43 fired this for any
+	 * with-on-off ramp whose attribute read 1, including the first ticks of an
+	 * UP ramp from an off fixture resting at 0 or 1: a turn-on to level 5 over
+	 * one second went ON, then OFF a tick later, and the fixture sat dark at
+	 * level 5. Every dim turn-on with a transition failed that way (measured
+	 * on a porch fixture, 2026-09-17), which is what the zigbee2mqtt converter's
+	 * brightness floor had been hiding. */
+	if(levelInfo.withOnOff && levelInfo.downToMin && !levelInfo.offSent &&
 	   (pLevel->curLevel == ZCL_LEVEL_ATTR_MIN_LEVEL)){
 		levelInfo.offSent = TRUE;
 		tuyaLight_onoff(ZCL_CMD_ONOFF_OFF);
@@ -486,6 +501,7 @@ static void tuyaLight_moveToLevelProcess(u8 cmdId, moveToLvl_t *cmd)
 
 	levelInfo.withOnOff = (cmdId == ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF) ? TRUE : FALSE;
 	levelInfo.offSent = FALSE;
+	levelInfo.downToMin = (cmd->level <= ZCL_LEVEL_ATTR_MIN_LEVEL) ? TRUE : FALSE;
 	levelInfo.targetLevel = cmd->level;
 	levelInfo.hasTarget = TRUE;
 	levelInfo.currentLevel256 = (u16)(pLevel->curLevel) << 8;
@@ -559,6 +575,7 @@ static void tuyaLight_moveProcess(u8 cmdId, move_t *cmd)
 
 	levelInfo.withOnOff = (cmdId == ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF) ? TRUE : FALSE;
 	levelInfo.offSent = FALSE;
+	levelInfo.downToMin = (cmd->moveMode != LEVEL_MOVE_UP) ? TRUE : FALSE;
 	levelInfo.currentLevel256 = (u16)(pLevel->curLevel) << 8;
 
 	u32 rate = (u32)cmd->rate * 100;
@@ -660,6 +677,7 @@ static void tuyaLight_stepProcess(u8 cmdId, step_t *cmd)
 	if(target > (s32)ZCL_LEVEL_ATTR_MAX_LEVEL){ target = (s32)ZCL_LEVEL_ATTR_MAX_LEVEL; }
 	levelInfo.targetLevel = (u8)target;
 	levelInfo.hasTarget = TRUE;
+	levelInfo.downToMin = ((cmd->stepMode != LEVEL_STEP_UP) && (target <= (s32)ZCL_LEVEL_ATTR_MIN_LEVEL)) ? TRUE : FALSE;
 
 	levelInfo.startLevel256 = (u16)(pLevel->curLevel) << 8;
 	levelInfo.targetLevel256 = ((u16)target) << 8;

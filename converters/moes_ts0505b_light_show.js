@@ -447,9 +447,6 @@ const tuyaDatapoints = [
 const CUSTOM_BUILD_ID = /^v\d+\.\d+s\d+\.\d+$/;
 const MOES_MODEL_ID = 'TS0505B';
 const MOES_MANUFACTURER = '_TZ3210_b8jdosxo';
-const BRIGHTNESS_FLOOR = 13;
-const MAX_LOW_RISE_TRANSITION = 1;
-const WRAPPED_CONVERTER = Symbol.for('moes.ts0505b.brightnessFloor.wrapped');
 
 const hasCustomFirmware = (device) => {
     // The dummy device carries no attributes and creates no real entity; show
@@ -466,155 +463,65 @@ const isCustomMoesEntity = (entity) => {
     return endpoints.some((endpoint) => isCustomMoesDevice(endpoint?.getDevice?.()));
 };
 
-const numericValue = (value) => {
-    const number = Number(value);
-    return Number.isFinite(number) ? number : undefined;
+/*
+ * Build 43 note. Until 2026-09-17 this converter wrapped the standard on/off,
+ * brightness, brightness_step and brightness_move converters with a floor of 13
+ * and a one-second cap on rising transitions from a dim or off origin. That was
+ * a guard against the bottom of the dimming range while the fade-to-off fault
+ * was open. The bench photometry that closed it (bench_photometry/ in the
+ * companion repo) showed levels 1-16 steady to 0.05%, and build 43 fades to
+ * black instead of plateauing at the 1% floor, so the guards are gone: a
+ * brightness of 1 is sent as 1, and a transition is honoured as given.
+ */
+
+/*
+ * TEMPORARY - remove once build 44 is on every fixture.
+ *
+ * Builds up to 43 fire the with-on-off Off whenever a ramp's level attribute
+ * reads 1, including the FIRST TICK OF AN UP RAMP from an off fixture. The paced
+ * ramp's first 20 ms tick lands near L * 3 / (50 * T) for a transition of T
+ * seconds, so a turn-on to level L stays OFF whenever T is longer than about
+ * L / 25 seconds: 1 s to level 5, 2 s to level 40, the household default 1 s to
+ * anything under 26. Measured on a porch fixture 2026-09-17.
+ *
+ * This guard only shortens the transition of a RISING command from an off (or
+ * unknown) origin to L / 25 seconds. No brightness floor, no other change; an
+ * on fixture, a fade down and a fade to off are untouched.
+ */
+const SAFE_RISE_LEVELS_PER_SECOND = 25;
+const numericValue = (v) => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
+const isOffState = (state) => String(state?.state ?? '').toLowerCase() !== 'on';
+const originIsOff = (entity, meta) => {
+    if (!utils.isGroup(entity)) return isOffState(meta.state);
+    const members = Object.values(meta.membersState ?? {});
+    return members.length === 0 || members.some(isOffState);
 };
-
-const stateValue = (value) => typeof value === 'string' ? value.toLowerCase() : value;
-
-const requestedTargetState = (message, meta) => {
-    const state = stateValue(message.state);
-    if (state === 'toggle') return stateValue(meta.state?.state) === 'on' ? 'off' : 'on';
-    if (state === undefined) return undefined;
-    return state;
-};
-
-const isUnsafeOrigin = (state) => {
-    const brightness = numericValue(state?.brightness);
-    return stateValue(state?.state) !== 'on' || brightness === undefined || brightness < BRIGHTNESS_FLOOR;
-};
-
-const hasUnsafeOrigin = (entity, meta) => {
-    if (!utils.isGroup(entity)) return isUnsafeOrigin(meta.state);
-    const memberStates = Object.values(meta.membersState ?? {});
-    return memberStates.length === 0 || memberStates.some(isUnsafeOrigin);
-};
-
-const cloneMetaWithMessage = (meta, message) => ({...meta, message});
-
-const transitionSeconds = (entity, meta) => utils.getTransition(entity, 'brightness', meta).time / 10;
-
-const withCappedRisingTransition = (entity, meta, turningOn) => {
-    if (!turningOn || !hasUnsafeOrigin(entity, meta)) return meta;
-    if (transitionSeconds(entity, meta) <= MAX_LOW_RISE_TRANSITION) return meta;
-    return cloneMetaWithMessage(meta, {...meta.message, transition: MAX_LOW_RISE_TRANSITION});
-};
-
-const setMessageBrightness = (meta, brightness, state) => {
-    const message = {...meta.message, brightness};
-    delete message.brightness_percent;
-    if (state !== undefined) message.state = state;
-    return cloneMetaWithMessage(meta, message);
-};
-
-const brightnessFromMessage = (message) => {
-    if (message.brightness != null) return numericValue(message.brightness);
-    if (message.brightness_percent != null) {
-        const percent = numericValue(message.brightness_percent);
-        return percent === undefined ? undefined : percent * 255 / 100;
+const safeRiseMeta = (entity, meta) => {
+    const msg = meta.message ?? {};
+    if (String(msg.state ?? '').toLowerCase() === 'off') return meta;
+    if (!originIsOff(entity, meta)) return meta;
+    let level = numericValue(msg.brightness);
+    if (level === undefined && msg.brightness_percent != null) level = Math.round(numericValue(msg.brightness_percent) * 254 / 100);
+    if (level === undefined) {
+        // A state-only ON restores the level the library remembers in its own
+        // store, not the cached state (which reads 0 after a fade to off).
+        const remembered = numericValue(globalStore.getValue(entity, 'brightness'));
+        const cached = numericValue(meta.state?.brightness);
+        level = (remembered > 0) ? remembered : (cached > 0) ? cached : 0;
     }
-    return undefined;
+    // Unknown or zero: assume the worst (a low level) and turn on without a ramp.
+    if (!(level > 0)) return {...meta, message: {...msg, transition: 0}};
+    const seconds = utils.getTransition(entity, 'brightness', meta).time / 10;
+    const maxSeconds = level / SAFE_RISE_LEVELS_PER_SECOND;
+    if (seconds <= maxSeconds) return meta;
+    return {...meta, message: {...msg, transition: Math.floor(maxSeconds * 10) / 10}};
 };
-
-const guardedOnOffMeta = (entity, meta) => {
-    const {message} = meta;
-    const requestedState = stateValue(message.state);
-    const targetState = requestedTargetState(message, meta);
-    const brightness = brightnessFromMessage(message);
-    const hasBrightness = message.brightness != null || message.brightness_percent != null;
-
-    if (requestedState === null || targetState === 'off') return {meta, turningOn: false};
-
-    if (hasBrightness) {
-        if (brightness === undefined || brightness < 0 || brightness > 255) return {meta, turningOn: targetState !== 'off'};
-        if (brightness === 0) return {meta: setMessageBrightness(meta, 0, 'OFF'), turningOn: false};
-        const guardedMeta = brightness < BRIGHTNESS_FLOOR ? setMessageBrightness(meta, BRIGHTNESS_FLOOR) : meta;
-        return {meta: guardedMeta, turningOn: true};
-    }
-
-    if (targetState !== 'on') return {meta, turningOn: false};
-    const fallback = numericValue(meta.state?.brightness) ?? 254;
-    const remembered = numericValue(globalStore.getValue(entity, 'brightness', fallback)) ?? fallback;
-    const brightnessToRestore = Math.min(254, Math.max(BRIGHTNESS_FLOOR, remembered));
-    return {meta: setMessageBrightness(meta, brightnessToRestore), turningOn: true};
+const wrapSafeRise = (converter) => {
+    const original = converter.convertSet;
+    converter.convertSet = async (entity, key, value, meta) =>
+        await original(entity, key, value, isCustomMoesEntity(entity) ? safeRiseMeta(entity, meta) : meta);
 };
-
-const floorMeta = (entity, meta, transition) => {
-    const message = {...meta.message, state: null, brightness: BRIGHTNESS_FLOOR};
-    delete message.brightness_percent;
-    delete message.brightness_move;
-    delete message.brightness_move_onoff;
-    delete message.brightness_step;
-    delete message.brightness_step_onoff;
-    if (transition !== undefined) message.transition = transition;
-    const boundedMeta = cloneMetaWithMessage(meta, message);
-    return withCappedRisingTransition(entity, boundedMeta, true);
-};
-
-const setFloorLevel = async (entity, meta, transition) =>
-    await tz.light_onoff_brightness.convertSet(entity, 'brightness', BRIGHTNESS_FLOOR, floorMeta(entity, meta, transition));
-
-const currentBrightness = async (entity, meta) => {
-    const cachedBrightness = numericValue(meta.state?.brightness);
-    if (cachedBrightness !== undefined) return cachedBrightness;
-    const target = utils.getEntityOrFirstGroupMember(entity);
-    if (!target) return undefined;
-    try {
-        const result = await target.read('genLevelCtrl', ['currentLevel']);
-        return numericValue(result?.currentLevel);
-    } catch {
-        return undefined;
-    }
-};
-
-const wrapConverter = (converter, guard) => {
-    if (converter.convertSet[WRAPPED_CONVERTER]) return;
-    const originalConvertSet = converter.convertSet;
-    const wrappedConvertSet = async (entity, key, value, meta) => await guard(originalConvertSet, entity, key, value, meta);
-    wrappedConvertSet[WRAPPED_CONVERTER] = true;
-    converter.convertSet = wrappedConvertSet;
-};
-
-const guardedOnOff = async (originalConvertSet, entity, key, value, meta) => {
-    if (!isCustomMoesEntity(entity)) return await originalConvertSet(entity, key, value, meta);
-    const guarded = guardedOnOffMeta(entity, meta);
-    const guardedMeta = withCappedRisingTransition(entity, guarded.meta, guarded.turningOn);
-    return await originalConvertSet(entity, key, value, guardedMeta);
-};
-
-const guardedStep = async (originalConvertSet, entity, key, value, meta) => {
-    if (!isCustomMoesEntity(entity) || Number(value) >= 0) return await originalConvertSet(entity, key, value, meta);
-    const current = await currentBrightness(entity, meta);
-    const next = current === undefined ? undefined : current + Number(value);
-    if (key.endsWith('_onoff') && next !== undefined && next <= 0) {
-        return await originalConvertSet(entity, key, value, meta);
-    }
-    if (next === undefined || next < BRIGHTNESS_FLOOR) return await setFloorLevel(entity, meta);
-    return await originalConvertSet(entity, key, value, meta);
-};
-
-const guardedMove = async (originalConvertSet, entity, key, value, meta) => {
-    if (!isCustomMoesEntity(entity)) return await originalConvertSet(entity, key, value, meta);
-    const rate = numericValue(value);
-    if (rate === undefined || rate === 0 || value === 'stop') {
-        const result = await originalConvertSet(entity, key, value, meta);
-        const brightness = numericValue(result?.state?.brightness);
-        if (stateValue(result?.state?.state) === 'on' && brightness !== undefined && brightness < BRIGHTNESS_FLOOR) {
-            const floorResult = await setFloorLevel(entity, meta);
-            return {state: {...result.state, ...floorResult?.state, state: 'ON'}};
-        }
-        return result;
-    }
-    if (rate > 0) return await originalConvertSet(entity, key, value, meta);
-    const current = await currentBrightness(entity, meta);
-    if (current === undefined || current <= BRIGHTNESS_FLOOR) return await setFloorLevel(entity, meta);
-    return await setFloorLevel(entity, meta, (current - BRIGHTNESS_FLOOR) / Math.abs(rate));
-};
-
-wrapConverter(tz.light_onoff_brightness, guardedOnOff);
-wrapConverter(tz.light_brightness_step, guardedStep);
-wrapConverter(tz.light_brightness_move, guardedMove);
+wrapSafeRise(tz.light_onoff_brightness);
 
 const builtinBrightnessConverter = (builtin.toZigbee ?? []).find((converter) => converter.key?.includes('brightness'));
 if (!builtinBrightnessConverter) {

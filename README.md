@@ -74,14 +74,18 @@ What you can control, all of it readable back from the device:
 | `light_show_index` / `_spread` | fixture position in a room, and degrees of phase per position |
 | `light_show_takeover` | whether an ordinary Zigbee command stops the show |
 | `light_show_duration` | run for N milliseconds, then stop |
-| `light_show_cue_list` / `_cue_run` | a 32-entry timed sequence uploaded to the chip and played locally at 50 fps |
-| `light_show_cue_save` / `_cue_recall` / `_cue_slots` | (build 43) shows stored in four flash slots on the chip; slot 0 comes back at power-up, recall + run is one frame |
 | `light_show_density` | how much of a `burst` is sparks |
 | `light_show_cue` | several of the above plus a delay, in one atomic frame |
-| `light_show_cue_list` / `_cue_run` | up to 32 timed steps, uploaded and then played by the chip |
+| `light_show_cue_list` / `_cue_run` | up to 32 timed steps, uploaded (7 per frame) and then played by the chip at 50 fps |
+| `light_show_cue_save` / `_cue_recall` / `_cue_slots` | shows **stored in flash on the chip**, four slots; slot 0 comes back at power-up; recall + run is one frame (build 43) |
 
-Three of those are worth calling out:
+Four of those are worth calling out:
 
+* **Shows live on the chip.** Save an uploaded cue list into one of four flash
+  slots and it survives power cuts; slot 0 reloads itself at power-up, and one
+  group frame (`{"light_show_cue": {"cue_recall": 2, "cue_run": "run"}}`)
+  recalls and starts a stored show on every fixture at once. Uploading is a
+  one-time cost per show, not a pre-show ritual. (Build 43.)
 * **A cue list moves choreography off the network.** Upload up to 32 timed
   steps, trigger them with one frame, and the chip plays the sequence itself.
   A thirty-second show stops being dozens of frames fighting for airtime.
@@ -110,7 +114,20 @@ Full reference: [docs/light_show.md](docs/light_show.md).
   brightness, was five times too dim at the bottom of the dial where a
   downlight actually lives.
 * **The bottom of the dimming range works.** Levels 1 to 9 no longer all render
-  identically.
+  identically, and the fade is smooth: level and colour ramps tick every 20 ms
+  through an 8.8 fixed-point render chain (250 distinct outputs in a 5 s fade
+  against 50 before), paced along a cubic in time so perceived brightness falls
+  evenly.
+* **A fade to off ends at black, not on a step.** Measured with calibrated
+  photometry (build 43): this driver reaches full output at about a third of
+  the PWM range, so the factory 1% floor is 5.7% of full light, 38% of the
+  perceived range, and every fade used to sit there for a second and then cut.
+  The output now ramps below the floor to black; steady levels 1-254 render
+  exactly as before, so stored scenes are untouched.
+* **Turning on to a dim level with a fade works** (build 44). A with-on-off
+  ramp *up* from an off fixture used to trip the ZCL "reached the minimum,
+  switch off" rule on its first tick and leave the light off at its target;
+  the rule now applies only to ramps heading down to the minimum.
 * **Scenes carry colour temperature.** They previously stored stale hue and
   saturation, so a recall came back the wrong colour.
 * **`onWithTimedOff` works**, which stock ignored entirely.
@@ -235,31 +252,67 @@ Full procedure — including the SWire backup that is the only thing making this
 reversible — is in
 [docs/moes_ts0505b_conversion.md](docs/moes_ts0505b_conversion.md).
 
+### Build 44, one day after build 43
+
+Build 43 shipped on the evening of 2026-09-16 and build 44 on the morning of
+the 17th. Here is why, so nobody has to guess.
+
+Build 43 fixed the fade to black and added stored shows, and the household's
+zigbee2mqtt converter had for ten days carried a brightness floor of 13 and a
+one-second cap on fade-ups from an off fixture. Those caps had been added as a
+guard against "the light issues" at the bottom of the range. With the bottom now
+measured steady and the fade fixed, the owner asked for the caps to go, and they
+went.
+
+Within minutes a porch fixture showed what the caps had been hiding: a turn-on
+to a dim level *with a fade* blinked once and stayed dark, while the controller
+believed it was on. The cause was in the level code since build 40. The ZCL rule
+"if a fade reaches the minimum level, switch off" was being checked on every
+step of every with-on-off ramp, including a ramp going *up* from an off fixture,
+whose first steps read level 1. The light switched on, climbed one step, read
+"minimum", switched off, and finished its climb in the dark. Targets below about
+25 per second of fade, from a fixture resting at level 0 or 1, all did this.
+Anything brighter or faster skipped past level 1 in one stride and never showed
+it, which is why two rollouts and a bench full of instruments missed it.
+
+Build 44 changes one thing: the switch-off applies only to a ramp that is
+heading *down* to the minimum. Each command records its direction when it
+starts. Four new host tests drive the real level code through a climb from
+level 1, a climb from level 0, a step up from the minimum and a step down onto
+it; the first fails on build 43 and passes on build 44. Nothing else moved:
+steady levels, the fade to black, stored shows and the light-show engine are
+byte-for-byte build 43.
+
+Until every fixture is on build 44 the converter carries a small temporary
+guard that only shortens a turn-on transition from an off fixture enough to
+clear level 1. It has no brightness floor. Remove it once the rollout is done.
+
 ### Status, honestly
 
-**Build 37 is the current tip.** Build 36 introduced the light-show engine
-described above but reported its state with the wrong ZCL frame direction, so
-every report was silently discarded by the coordinator; build 37 is that one
-constant, and is the build to use.
+**Build 44 is the current release** (`v1.44s3.3`,
+[release b44](https://github.com/s0meguy1/tuyaZigbee/releases/tag/b44)).
+Build 37 introduced the light-show engine in its working form, builds 38-40
+made `transition:` fades smooth, build 43 took the fade to black and put
+stored shows on the chip, and build 44 fixed a dim turn-on with a fade
+switching itself off (see the section above).
 
-* Builds through 35 have run on a fleet of nineteen fixtures across three
-  rooms, including conversions from stock, mains power cycles and day-scale
-  operation.
-* The light-show engine has been exercised on hardware and measured with a
-  mains power meter. Those measurements drove the build 36 rewrite, and the
-  engine's own field notes are what the feature list above was written from.
-* Build 37 has been installed on a bench fixture over a wired programmer and
-  on a ceiling fixture over the air, and has passed a scripted acceptance
-  covering the cue list, deferred frames, state readback, the takeover policy
-  and persistence across a power cycle, followed by a visual confirmation on a
-  real fixture.
-* It has since been rolled out over the air across the whole fleet, one fixture
-  at a time. Seventeen of eighteen updated unattended overnight with no
-  intervention. One stalled partway and resumed from its checkpoint on a retry;
-  a second refused to begin a transfer at all until its mains supply was
-  cycled, after which it also resumed rather than starting over. No fixture was
-  lost, and a failed transfer left its light running the build it already had.
-* It has not yet had a long soak.
+* Builds through 40 have run on a fleet of about fifty fixtures across a house,
+  including conversions from stock, mains power cycles and weeks of operation.
+* The fade work in builds 38-43 was measured, not eyeballed: a calibrated
+  photometer (BH1750 + TSL2591) under a bench fixture, raw counts logged at
+  85 samples a second, reduced against the firmware's own arithmetic. The
+  measurements, the raw data and the tooling are in the companion repository
+  under `bench_photometry/`. They also record what the driver actually does:
+  linear in duty to about level 48, saturating above it.
+* Build 43's stored shows were verified on the bench (uploads of 1-23 entries
+  counted exactly, save/recall/run from one frame, slot 0 back after a mains
+  cycle) and the fixture-by-fixture rollout across the house began on
+  2026-09-16; the first fixtures passed a functional gate before the rest
+  followed.
+* Earlier over-the-air rollouts (builds 37 and 40) updated the whole fleet
+  unattended, one fixture at a time; stalled transfers resumed from their
+  checkpoint, and no fixture was lost.
+* It has not yet had a long soak on build 43.
 
 What does **not** count as evidence here, because it misled this project
 repeatedly: a successful Zigbee command or attribute readback does not prove

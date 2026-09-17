@@ -272,6 +272,52 @@ static int test_fade_to_off_still_switches_off_after_250_ticks(void)
     return 0;
 }
 
+/* Build 44. A with-on-off ramp UP from an off fixture passes through level 1
+ * on its first ticks. Builds 40-43 fired the "reached the minimum" Off there
+ * and left the light off at its target. Off belongs to a ramp heading DOWN to
+ * the minimum only. */
+static int test_up_ramp_from_off_at_minimum_turns_on_and_stays_on(void)
+{
+    reset_sim(ZCL_LEVEL_ATTR_MIN_LEVEL, FALSE);
+    if (move_to_over(ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF, 5, 10) != ZCL_STA_SUCCESS) return 140;
+    if (run_to_completion() < 0) return 141;
+    if (!g_zcl_onOffAttrs.onOff) return 142;
+    if (onoff_count != 1 || last_onoff != ZCL_CMD_ONOFF_ON) return 143;
+    if (g_zcl_levelAttrs.curLevel != 5) return 144;
+    return 0;
+}
+
+static int test_up_ramp_from_off_at_zero_turns_on_and_stays_on(void)
+{
+    /* After a fade to off the attribute rests at 0, below the minimum. */
+    reset_sim(0, FALSE);
+    if (move_to_over(ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF, 5, 10) != ZCL_STA_SUCCESS) return 150;
+    if (run_to_completion() < 0) return 151;
+    if (!g_zcl_onOffAttrs.onOff || onoff_count != 1 || last_onoff != ZCL_CMD_ONOFF_ON) return 152;
+    if (g_zcl_levelAttrs.curLevel != 5) return 153;
+    return 0;
+}
+
+static int test_step_up_from_minimum_with_onoff_stays_on(void)
+{
+    reset_sim(ZCL_LEVEL_ATTR_MIN_LEVEL, FALSE);
+    if (step_cmd(ZCL_CMD_LEVEL_STEP_WITH_ON_OFF, LEVEL_STEP_UP, 4, 10) != ZCL_STA_SUCCESS) return 160;
+    if (run_to_completion() < 0) return 161;
+    if (!g_zcl_onOffAttrs.onOff || onoff_count != 1 || last_onoff != ZCL_CMD_ONOFF_ON) return 162;
+    if (g_zcl_levelAttrs.curLevel != ZCL_LEVEL_ATTR_MIN_LEVEL + 4) return 163;
+    return 0;
+}
+
+static int test_step_down_to_minimum_with_onoff_still_turns_off(void)
+{
+    reset_sim(5, TRUE);
+    if (step_cmd(ZCL_CMD_LEVEL_STEP_WITH_ON_OFF, LEVEL_STEP_DOWN, 4, 10) != ZCL_STA_SUCCESS) return 170;
+    if (run_to_completion() < 0) return 171;
+    if (g_zcl_onOffAttrs.onOff) return 172;
+    if (onoff_count != 1 || last_onoff != ZCL_CMD_ONOFF_OFF) return 173;
+    return 0;
+}
+
 static int test_remaining_time_stays_in_deciseconds(void)
 {
     int i;
@@ -371,6 +417,10 @@ int main(void)
     if ((result = test_five_second_fade_renders_250_times()) != 0) goto failed;
     if ((result = test_long_up_ramp_lands_exactly_on_target()) != 0) goto failed;
     if ((result = test_fade_to_off_still_switches_off_after_250_ticks()) != 0) goto failed;
+    if ((result = test_up_ramp_from_off_at_minimum_turns_on_and_stays_on()) != 0) goto failed;
+    if ((result = test_up_ramp_from_off_at_zero_turns_on_and_stays_on()) != 0) goto failed;
+    if ((result = test_step_up_from_minimum_with_onoff_stays_on()) != 0) goto failed;
+    if ((result = test_step_down_to_minimum_with_onoff_still_turns_off()) != 0) goto failed;
     if ((result = test_remaining_time_stays_in_deciseconds()) != 0) goto failed;
     if ((result = test_unspecified_transition_time_is_immediate()) != 0) goto failed;
     if ((result = test_move_command_terminates_at_the_end_stop()) != 0) goto failed;
