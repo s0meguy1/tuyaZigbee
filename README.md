@@ -191,6 +191,15 @@ bricked a fixture on this project.
 Prefer to build it yourself? See [Compilation](#compilation) — the full source
 is here and the release is only a convenience.
 
+#### Updating many fixtures
+
+[`tools/fleet-ota/`](tools/fleet-ota/) holds the script that rolled builds 37 to
+44 across a 49-fixture house over the air, one fixture at a time, confirming each
+install by the firmware's own build stamp and gating the run on the first
+fixture. Its README lists what it needs (zigbee2mqtt 2.x, an MQTT client and
+the zigbee2mqtt log on the machine you run it from, an http server for the
+image). Custom-to-custom only.
+
 #### Which container
 
 Every build emits **two** containers, and picking the wrong one wastes a transfer:
