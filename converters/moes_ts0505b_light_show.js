@@ -475,53 +475,12 @@ const isCustomMoesEntity = (entity) => {
  */
 
 /*
- * TEMPORARY - remove once build 44 is on every fixture.
- *
- * Builds up to 43 fire the with-on-off Off whenever a ramp's level attribute
- * reads 1, including the FIRST TICK OF AN UP RAMP from an off fixture. The paced
- * ramp's first 20 ms tick lands near L * 3 / (50 * T) for a transition of T
- * seconds, so a turn-on to level L stays OFF whenever T is longer than about
- * L / 25 seconds: 1 s to level 5, 2 s to level 40, the household default 1 s to
- * anything under 26. Measured on a porch fixture 2026-09-17.
- *
- * This guard only shortens the transition of a RISING command from an off (or
- * unknown) origin to L / 25 seconds. No brightness floor, no other change; an
- * on fixture, a fade down and a fade to off are untouched.
+ * Build 44 note. From 2026-09-17 to the end of the build-44 rollout this converter
+ * carried a temporary guard (wrapSafeRise) that shortened a rising transition from
+ * an off origin, because builds 40-43 switched themselves off when a fade-up from an
+ * off fixture passed through level 1. Build 44 fixed that in the firmware, so the
+ * guard is gone: every brightness and transition is sent exactly as asked.
  */
-const SAFE_RISE_LEVELS_PER_SECOND = 25;
-const numericValue = (v) => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
-const isOffState = (state) => String(state?.state ?? '').toLowerCase() !== 'on';
-const originIsOff = (entity, meta) => {
-    if (!utils.isGroup(entity)) return isOffState(meta.state);
-    const members = Object.values(meta.membersState ?? {});
-    return members.length === 0 || members.some(isOffState);
-};
-const safeRiseMeta = (entity, meta) => {
-    const msg = meta.message ?? {};
-    if (String(msg.state ?? '').toLowerCase() === 'off') return meta;
-    if (!originIsOff(entity, meta)) return meta;
-    let level = numericValue(msg.brightness);
-    if (level === undefined && msg.brightness_percent != null) level = Math.round(numericValue(msg.brightness_percent) * 254 / 100);
-    if (level === undefined) {
-        // A state-only ON restores the level the library remembers in its own
-        // store, not the cached state (which reads 0 after a fade to off).
-        const remembered = numericValue(globalStore.getValue(entity, 'brightness'));
-        const cached = numericValue(meta.state?.brightness);
-        level = (remembered > 0) ? remembered : (cached > 0) ? cached : 0;
-    }
-    // Unknown or zero: assume the worst (a low level) and turn on without a ramp.
-    if (!(level > 0)) return {...meta, message: {...msg, transition: 0}};
-    const seconds = utils.getTransition(entity, 'brightness', meta).time / 10;
-    const maxSeconds = level / SAFE_RISE_LEVELS_PER_SECOND;
-    if (seconds <= maxSeconds) return meta;
-    return {...meta, message: {...msg, transition: Math.floor(maxSeconds * 10) / 10}};
-};
-const wrapSafeRise = (converter) => {
-    const original = converter.convertSet;
-    converter.convertSet = async (entity, key, value, meta) =>
-        await original(entity, key, value, isCustomMoesEntity(entity) ? safeRiseMeta(entity, meta) : meta);
-};
-wrapSafeRise(tz.light_onoff_brightness);
 
 const builtinBrightnessConverter = (builtin.toZigbee ?? []).find((converter) => converter.key?.includes('brightness'));
 if (!builtinBrightnessConverter) {
